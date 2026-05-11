@@ -2,15 +2,16 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
 import { Play, RotateCcw, Brain, Check, X, Trophy, Timer, Lightbulb, Share2, Settings, Star, Calendar } from 'lucide-react';
+import { AnimatedBackground } from './components/AnimatedBackground';
 import { AdPlaceholder } from './components/AdPlaceholder';
 import { generateTriviaQuestions, TriviaQuestion } from './lib/gemini';
 import { AnimatedNumber } from './components/AnimatedNumber';
-import { playSound, getSoundEnabled, setSoundEnabled } from './lib/sounds';
+import { playSound, getSoundEnabled, setSoundEnabled, playBGM, stopBGM, setMusicEnabled } from './lib/sounds';
 
 type GameState = 'MENU' | 'LOADING' | 'PLAYING' | 'ADVERT' | 'ADVERT_REWARDED' | 'GAME_OVER' | 'SETTINGS' | 'ACHIEVEMENTS';
 type Difficulty = 'Easy' | 'Medium' | 'Hard';
 type Category = 'General Knowledge' | 'Science' | 'History' | 'Pop Culture';
-type Theme = 'default' | 'space' | 'underwater' | 'fantasy' | 'cyberpunk' | 'tropical' | 'vintage';
+type Theme = 'default' | 'space' | 'underwater' | 'fantasy' | 'cyberpunk' | 'vintage' | 'scifi';
 
 type Stats = {
   totalCorrect: number;
@@ -18,6 +19,11 @@ type Stats = {
   maxStreak: number;
   hardModePlayed: boolean;
   hintsUsed: number;
+  dailyChallengesCompleted: number;
+  dailyHighScore: number;
+  gamesCompleted: number;
+  totalScore: number;
+  categoryPlays: Record<string, number>;
 };
 
 const defaultStats: Stats = {
@@ -26,10 +32,19 @@ const defaultStats: Stats = {
   maxStreak: 0,
   hardModePlayed: false,
   hintsUsed: 0,
+  dailyChallengesCompleted: 0,
+  dailyHighScore: 0,
+  gamesCompleted: 0,
+  totalScore: 0,
+  categoryPlays: {
+    'General Knowledge': 0,
+    'Science': 0,
+    'History': 0,
+    'Pop Culture': 0,
+  }
 };
 
 const QUESTIONS_PER_ROUND = 5;
-const SECONDS_PER_QUESTION = 15;
 const DAILY_SECONDS = 10;
 
 
@@ -48,7 +63,7 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>('default');
   const [playerName, setPlayerName] = useState('');
   
-  const [timeLeft, setTimeLeft] = useState(SECONDS_PER_QUESTION);
+  const [timeLeft, setTimeLeft] = useState(15);
   const [hintUsed, setHintUsed] = useState(false);
   const [skipUsed, setSkipUsed] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -63,6 +78,15 @@ export default function App() {
   const [dailyTimeStr, setDailyTimeStr] = useState('');
   const [stats, setStats] = useState<Stats>(defaultStats);
   const [soundEnabled, setSoundToggle] = useState(true);
+
+  const [showQuitConfirm, setShowQuitConfirm] = useState(false);
+  const [musicEnabled, setMusicToggle] = useState(true);
+  const [timerDuration, setTimerDurationState] = useState<number>(15);
+  const [scorePopup, setScorePopup] = useState<number | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [resumeMusicAfterAd, setResumeMusicAfterAd] = useState(false);
+  const [themePreview, setThemePreview] = useState<Theme | null>(null);
 
   // Stats updater
   const updateStats = (updates: Partial<Stats>) => {
@@ -113,6 +137,20 @@ export default function App() {
       setSoundToggle(isEnabled);
       setSoundEnabled(isEnabled);
     }
+    const savedMusic = localStorage.getItem('trivia_genius_music');
+    if (savedMusic !== null) {
+      const isMusicEnabled = savedMusic === 'true';
+      setMusicToggle(isMusicEnabled);
+      setMusicEnabled(isMusicEnabled);
+    }
+    const savedTimer = localStorage.getItem('trivia_genius_timer_duration');
+    if (savedTimer !== null) {
+      setTimerDurationState(parseInt(savedTimer, 10));
+    }
+    const savedResumeMusic = localStorage.getItem('trivia_genius_resume_music');
+    if (savedResumeMusic !== null) {
+      setResumeMusicAfterAd(savedResumeMusic === 'true');
+    }
   }, []);
 
   const toggleSound = () => {
@@ -123,8 +161,35 @@ export default function App() {
     localStorage.setItem('trivia_genius_sound', String(next));
   };
 
+  const toggleMusic = () => {
+    playSound.click();
+    const next = !musicEnabled;
+    setMusicToggle(next);
+    setMusicEnabled(next);
+    localStorage.setItem('trivia_genius_music', String(next));
+    if (next) {
+      playBGM();
+    } else {
+      stopBGM();
+    }
+  };
+
+  const toggleResumeMusic = () => {
+    playSound.click();
+    const next = !resumeMusicAfterAd;
+    setResumeMusicAfterAd(next);
+    localStorage.setItem('trivia_genius_resume_music', String(next));
+  };
+
   const startGame = async () => {
     playSound.click();
+    if (!playerName || playerName.trim().length < 2) {
+      setNameError("Please enter a name (at least 2 characters).");
+      return;
+    }
+    setNameError(null);
+    setApiError(null);
+    playBGM();
     localStorage.setItem('trivia_genius_player_name', playerName);
     localStorage.setItem('trivia_genius_theme', theme);
     if (difficulty === 'Hard' && !stats.hardModePlayed) updateStats({ hardModePlayed: true });
@@ -137,6 +202,13 @@ export default function App() {
 
   const startDailyChallenge = async () => {
     playSound.click();
+    if (!playerName || playerName.trim().length < 2) {
+      setNameError("Please enter a name (at least 2 characters).");
+      return;
+    }
+    setNameError(null);
+    setApiError(null);
+    playBGM();
     localStorage.setItem('trivia_genius_player_name', playerName);
     localStorage.setItem('trivia_genius_theme', theme);
     
@@ -155,7 +227,8 @@ export default function App() {
     setDifficulty('Hard'); // Modifiers
     setGameState('LOADING');
     setIsLoading(true);
-    const newQuestions = await generateTriviaQuestions(10, 'Hard', 'General Knowledge'); // 10 hard questions
+    const { questions: newQuestions, error } = await generateTriviaQuestions(10, 'Hard', 'General Knowledge'); // 10 hard questions
+    if (error) setApiError(error);
     setQuestions(newQuestions);
     setCurrentIdx(0);
     setSelectedOption(null);
@@ -171,7 +244,9 @@ export default function App() {
 
   const fetchQuestions = async () => {
     setIsLoading(true);
-    const newQuestions = await generateTriviaQuestions(QUESTIONS_PER_ROUND, difficulty, category);
+    setApiError(null);
+    const { questions: newQuestions, error } = await generateTriviaQuestions(QUESTIONS_PER_ROUND, difficulty, category);
+    if (error) setApiError(error);
     setQuestions(newQuestions);
     setCurrentIdx(0);
     setSelectedOption(null);
@@ -180,18 +255,18 @@ export default function App() {
     setSkipUsed(false);
     setSecondChanceUsed(false);
     setEliminatedOptions([]);
-    setTimeLeft(isDailyChallenge ? DAILY_SECONDS : SECONDS_PER_QUESTION);
+    setTimeLeft(isDailyChallenge ? DAILY_SECONDS : timerDuration);
     setIsLoading(false);
     setGameState('PLAYING');
   };
 
   useEffect(() => {
-    if (gameState === 'PLAYING' && !isAnswerRevealed && timeLeft > 0 && !isPaused && !showSecondChance) {
+    if (gameState === 'PLAYING' && !isAnswerRevealed && timeLeft > 0 && !isPaused && !showSecondChance && (isDailyChallenge || timerDuration > 0)) {
       const timerId = setTimeout(() => {
         setTimeLeft(t => t - 1);
       }, 1000);
       return () => clearTimeout(timerId);
-    } else if (gameState === 'PLAYING' && !isAnswerRevealed && timeLeft === 0 && !isPaused && !showSecondChance) {
+    } else if (gameState === 'PLAYING' && !isAnswerRevealed && timeLeft === 0 && !isPaused && !showSecondChance && (isDailyChallenge || timerDuration > 0)) {
       handleOptionClick(-1); // -1 signifies timeout
     }
   }, [gameState, isAnswerRevealed, timeLeft, isPaused, showSecondChance]);
@@ -205,16 +280,56 @@ export default function App() {
     });
   };
 
+  const handleGameOver = () => {
+    const newTotalScore = (stats.totalScore || 0) + score;
+    const catPlays = { ...stats.categoryPlays } || {
+      'General Knowledge': 0,
+      'Science': 0,
+      'History': 0,
+      'Pop Culture': 0,
+    };
+    if (category in catPlays) {
+      catPlays[category as keyof typeof catPlays] = (catPlays[category as keyof typeof catPlays] || 0) + 1;
+    }
+
+    if (isDailyChallenge) {
+      updateStats({
+        dailyChallengesCompleted: (stats.dailyChallengesCompleted || 0) + 1,
+        dailyHighScore: Math.max(stats.dailyHighScore || 0, score),
+        gamesCompleted: (stats.gamesCompleted || 0) + 1,
+        totalScore: newTotalScore,
+        categoryPlays: catPlays
+      });
+    } else {
+      updateStats({
+        gamesCompleted: (stats.gamesCompleted || 0) + 1,
+        totalScore: newTotalScore,
+        categoryPlays: catPlays
+      });
+    }
+    if (score > highScore) {
+      setHighScore(score);
+      localStorage.setItem('trivia_genius_high_score', score.toString());
+    }
+    setGameState('GAME_OVER');
+  };
+
   const advanceQuestion = () => {
     const isRoundOver = currentIdx + 1 >= questions.length;
     if (isRoundOver) {
-      setGameState(isDailyChallenge ? 'GAME_OVER' : 'ADVERT');
+      if (isDailyChallenge) {
+        handleGameOver();
+      } else {
+        stopBGM();
+        setGameState('ADVERT');
+      }
     } else {
       setCurrentIdx(i => i + 1);
       setSelectedOption(null);
       setIsAnswerRevealed(false);
       setEliminatedOptions([]);
-      setTimeLeft(isDailyChallenge ? DAILY_SECONDS : SECONDS_PER_QUESTION);
+      setScorePopup(null);
+      setTimeLeft(isDailyChallenge ? DAILY_SECONDS : timerDuration);
       setShimmerScore(false);
     }
   };
@@ -229,8 +344,11 @@ export default function App() {
     const isCorrect = idx === questions[currentIdx].correctOptionIndex;
     
     if (isCorrect) {
-      const newScore = score + 100;
+      const difficultyMultiplier = difficulty === 'Easy' ? 0.5 : difficulty === 'Hard' ? 2 : 1;
+      const pointsGained = 100 * difficultyMultiplier;
+      const newScore = score + pointsGained;
       setScore(newScore);
+      setScorePopup(pointsGained);
       let newHighScoreTriggered = false;
       if (newScore > highScore && highScore > 0 && !isNewHighScore) {
         setIsNewHighScore(true);
@@ -249,7 +367,8 @@ export default function App() {
         currentStreak: newStreak,
         maxStreak: Math.max(stats.maxStreak, newStreak)
       });
-
+      
+      playSound.cashRegister();
       playSound.correct();
       if (!newHighScoreTriggered) fireConfetti();
       
@@ -273,6 +392,25 @@ export default function App() {
     advanceQuestion();
   };
 
+  const confirmQuit = () => {
+    playSound.click();
+    setShowQuitConfirm(true);
+    setIsPaused(true);
+  };
+
+  const cancelQuit = () => {
+    playSound.click();
+    setShowQuitConfirm(false);
+    setIsPaused(false);
+  };
+
+  const handleQuit = () => {
+    playSound.click();
+    setShowQuitConfirm(false);
+    setIsPaused(false);
+    setGameState('MENU');
+  };
+
   const useHint = () => {
     if (hintUsed || isAnswerRevealed || gameState !== 'PLAYING' || isPaused || showSecondChance) return;
     playSound.click();
@@ -284,14 +422,17 @@ export default function App() {
       i => i !== currentQ.correctOptionIndex && !eliminatedOptions.includes(i)
     );
     
-    if (incorrectIndices.length > 0) {
-      const toEliminate = incorrectIndices[Math.floor(Math.random() * incorrectIndices.length)];
-      setEliminatedOptions(prev => [...prev, toEliminate]);
+    if (incorrectIndices.length >= 2) {
+      const shuffled = [...incorrectIndices].sort(() => 0.5 - Math.random());
+      setEliminatedOptions(prev => [...prev, shuffled[0], shuffled[1]]);
+    } else if (incorrectIndices.length === 1) {
+      setEliminatedOptions(prev => [...prev, incorrectIndices[0]]);
     }
   };
 
   const handleSecondChanceWatchAd = () => {
     playSound.click();
+    stopBGM();
     setShowSecondChance(false);
     setGameState('ADVERT_REWARDED');
   };
@@ -304,28 +445,35 @@ export default function App() {
 
   const handleRewardedAdClose = () => {
     playSound.click();
+    if (!resumeMusicAfterAd) {
+      setMusicToggle(false);
+      setMusicEnabled(false);
+      localStorage.setItem('trivia_genius_music', 'false');
+    } else if (musicEnabled) {
+      playBGM();
+    }
     setSecondChanceUsed(true);
     setGameState('PLAYING');
     setSelectedOption(null);
     setIsAnswerRevealed(false);
-    setTimeLeft(isDailyChallenge ? DAILY_SECONDS : SECONDS_PER_QUESTION);
+    setTimeLeft(isDailyChallenge ? DAILY_SECONDS : timerDuration);
   };
 
   const handleAdClose = async () => {
-    // Show game over if they answered incorrectly before the ad? 
-    // Actually, let's just do endless mode where you accumulate score 
-    // until you explicitly quit, or just endless rounds!
+    if (!resumeMusicAfterAd) {
+      setMusicToggle(false);
+      setMusicEnabled(false);
+      localStorage.setItem('trivia_genius_music', 'false');
+    } else if (musicEnabled) {
+      playBGM();
+    }
     setGameState('LOADING');
     await fetchQuestions();
   };
 
   const endGame = () => {
     playSound.click();
-    if (score > highScore) {
-      setHighScore(score);
-      localStorage.setItem('trivia_genius_high_score', score.toString());
-    }
-    setGameState('GAME_OVER');
+    handleGameOver();
   };
 
   const getThemeClasses = () => {
@@ -336,6 +484,8 @@ export default function App() {
       case 'cyberpunk': return 'bg-black text-[#00ff41] border-[#00ff41]';
       case 'tropical': return 'bg-teal-900 text-teal-50';
       case 'vintage': return 'bg-[#4a3b32] text-[#f4ebd0]';
+      case 'scifi': return 'bg-[#0b0c10] text-[#66fcf1]';
+      case 'western': return 'bg-[#8d6e63] text-[#ffe082]';
       default: return 'bg-slate-900 text-white';
     }
   };
@@ -358,6 +508,32 @@ export default function App() {
       try {
         await navigator.clipboard.writeText(text + ' ' + window.location.href);
         alert('Score copied to clipboard!');
+      } catch (err) {
+        console.error('Failed to copy', err);
+      }
+    }
+  };
+
+  const handleShareLeaderboard = async () => {
+    playSound.click();
+    // Simulate rank since there's no backend connected
+    const rank = Math.max(1, Math.floor(10000 - score * 1.5));
+    const challengeText = isDailyChallenge ? 'in the Daily Challenge' : `on the Global Leaderboard`;
+    const text = `I just ranked #${rank} ${challengeText} with ${score} points in Trivia Genius! Think you can do better?`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Trivia Genius Leaderboard Rank',
+          text: text,
+          url: window.location.href
+        });
+      } catch (err) {
+        console.error('Share failed', err);
+      }
+    } else {
+      try {
+        await navigator.clipboard.writeText(text + ' ' + window.location.href);
+        alert('Leaderboard rank copied to clipboard!');
       } catch (err) {
         console.error('Failed to copy', err);
       }
@@ -387,24 +563,52 @@ export default function App() {
             <span className="text-xs uppercase tracking-widest opacity-70 font-bold">
               {isNewHighScore ? <span className="text-accent animate-pulse">New High Score!</span> : (playerName ? `${playerName}'s Score` : "Score")}
             </span>
-            <motion.span 
-              key={score}
-              initial={{ scale: 1.3 }}
-              animate={{ scale: 1 }}
-              transition={{ type: "spring", stiffness: 300, damping: 15 }}
-              className="text-2xl font-display font-bold text-accent inline-block origin-left"
-            >
-              <AnimatedNumber value={score} />
-            </motion.span>
+            <div className="flex items-center gap-2 relative">
+              <motion.span 
+                key={score}
+                initial={{ scale: 1.3 }}
+                animate={{ scale: 1 }}
+                transition={{ type: "spring", stiffness: 300, damping: 15 }}
+                className="text-2xl font-display font-bold text-accent inline-block origin-left"
+              >
+                <AnimatedNumber value={score} />
+              </motion.span>
+              {difficulty === 'Hard' && gameState !== 'GAME_OVER' && (
+                <span className="bg-red-500/20 text-red-500 border border-red-500/50 px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-widest">
+                  Hard
+                </span>
+              )}
+              <AnimatePresence>
+                {scorePopup && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 0, scale: 0.5 }}
+                    animate={{ opacity: [0, 1, 0], y: -40, scale: [0.5, 1.2, 1] }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 1.5, ease: "easeOut" }}
+                    className="absolute left-1/2 -translate-x-1/2 bottom-full mb-1 text-accent font-display font-black text-2xl z-50 pointer-events-none drop-shadow-md"
+                  >
+                    +{scorePopup}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </motion.div>
           <div className="flex space-x-2">
             {gameState === 'PLAYING' && (
-              <button 
-                onClick={() => { playSound.click(); setIsPaused(true); }}
-                className="px-4 py-2 bg-slate-800 rounded-full text-xs font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-700"
-              >
-                Pause
-              </button>
+              <>
+                <button 
+                  onClick={confirmQuit}
+                  className="px-4 py-2 bg-slate-800 rounded-full text-xs font-bold uppercase tracking-wider text-red-400 hover:bg-slate-700 hover:text-white transition-colors"
+                >
+                  Quit
+                </button>
+                <button 
+                  onClick={() => { playSound.click(); setIsPaused(true); }}
+                  className="px-4 py-2 bg-slate-800 rounded-full text-xs font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-700"
+                >
+                  Pause
+                </button>
+              </>
             )}
             {gameState !== 'PLAYING' && (
               <button 
@@ -445,25 +649,45 @@ export default function App() {
               <span className="font-bold tracking-wide">HIGH SCORE: {highScore}</span>
             </div>
             
-            <div className="flex flex-col items-center mb-6 w-full gap-3">
+            <div className="flex flex-col items-center mb-6 w-full gap-3 z-10 relative">
               <input 
                 type="text" 
-                placeholder="Enter your name (optional)" 
+                placeholder="Enter your name" 
                 value={playerName}
-                onChange={e => setPlayerName(e.target.value)}
-                className="w-full bg-slate-800 text-white p-4 rounded-xl text-center font-bold border border-slate-700 focus:border-primary outline-none transition-colors"
+                onChange={e => {
+                  setPlayerName(e.target.value);
+                  if (nameError) setNameError(null);
+                }}
+                className={`w-full bg-slate-800 text-white p-4 rounded-xl text-center font-bold border ${nameError ? 'border-red-500' : 'border-slate-700'} focus:border-primary outline-none transition-colors relative z-10`}
                 maxLength={20}
               />
-              <select
+              {nameError && (
+                <p className="text-red-400 text-sm font-bold w-full text-center mt-[-8px] relative z-10">{nameError}</p>
+              )}
+              <motion.select
+                key={category}
+                initial={{ scale: 1.05, borderColor: '#00C3FF', backgroundColor: '#1E293B' }}
+                animate={{ scale: 1, borderColor: '#334155', backgroundColor: '#1E293B' }}
+                transition={{ duration: 0.3 }}
                 value={category}
-                onChange={e => { playSound.click(); setCategory(e.target.value as Category); }}
-                className="w-full bg-slate-800 text-white p-4 rounded-xl font-bold text-center border border-slate-700 focus:border-primary outline-none transition-colors appearance-none"
+                onChange={e => { 
+                  playSound.click(); 
+                  const newCat = e.target.value as Category;
+                  setCategory(newCat); 
+                  switch(newCat) {
+                    case 'Science': setTheme('space'); break;
+                    case 'History': setTheme('vintage'); break;
+                    case 'Pop Culture': setTheme('cyberpunk'); break;
+                    case 'General Knowledge': setTheme('default'); break;
+                  }
+                }}
+                className="w-full text-white p-4 rounded-xl font-bold text-center border focus:border-primary outline-none transition-colors appearance-none relative z-10"
               >
                 <option value="General Knowledge">General Knowledge</option>
                 <option value="Science">Science</option>
                 <option value="History">History</option>
                 <option value="Pop Culture">Pop Culture</option>
-              </select>
+              </motion.select>
             </div>
 
             <div className="flex space-x-2 mb-4 bg-slate-800 p-1 rounded-full w-full">
@@ -478,15 +702,19 @@ export default function App() {
               ))}
             </div>
 
-            <div className="flex space-x-1 mb-8 bg-slate-800 p-1 rounded-full w-full overflow-x-auto no-scrollbar">
-              {(['default', 'space', 'underwater', 'fantasy', 'cyberpunk', 'tropical', 'vintage'] as Theme[]).map(t => (
-                <button
+            <div className="flex space-x-2 mb-8 bg-slate-800 p-1 rounded-full w-full overflow-x-auto scroll-smooth no-scrollbar relative z-10" style={{ scrollSnapType: 'x mandatory' }}>
+              {(['default', 'space', 'underwater', 'fantasy', 'cyberpunk', 'vintage', 'scifi'] as Theme[]).map(t => (
+                <motion.button
+                  whileTap={{ scale: 0.95 }}
+                  onHoverStart={() => setThemePreview(t)}
+                  onHoverEnd={() => setThemePreview(null)}
                   key={t}
-                  onClick={() => { playSound.click(); setTheme(t); }}
-                  className={`flex-1 py-2 px-4 rounded-full font-bold text-xs uppercase transition-all whitespace-nowrap ${theme === t ? 'bg-primary text-white shadow-md' : 'text-slate-400 hover:text-white'}`}
+                  onClick={() => { playSound.click(); setTheme(t); setThemePreview(null); }}
+                  className={`py-2 px-6 rounded-full font-bold text-xs uppercase transition-all whitespace-nowrap scroll-snap-align-start ${theme === t ? 'bg-primary text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}
+                  style={{ scrollSnapAlign: 'start' }}
                 >
                   {t}
-                </button>
+                </motion.button>
               ))}
             </div>
 
@@ -546,10 +774,10 @@ export default function App() {
             </div>
             <h2 className="text-4xl font-display font-black text-center mb-8">Settings</h2>
             
-            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-8 flex items-center justify-between">
+            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-4 flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-bold">Sound Effects</h3>
-                <p className="text-slate-400 text-sm">Toggle all game sounds</p>
+                <p className="text-slate-400 text-sm">Toggle UI and game sound effects</p>
               </div>
               <button 
                 onClick={toggleSound}
@@ -557,6 +785,54 @@ export default function App() {
               >
                 <div className={`w-6 h-6 rounded-full bg-white transition-transform ${soundEnabled ? 'translate-x-8' : 'translate-x-0'}`} />
               </button>
+            </div>
+
+            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-bold">Background Music</h3>
+                <p className="text-slate-400 text-sm">Toggle theme music</p>
+              </div>
+              <button 
+                onClick={toggleMusic}
+                className={`w-16 h-8 rounded-full flex items-center p-1 transition-colors ${musicEnabled ? 'bg-primary' : 'bg-slate-600'}`}
+              >
+                <div className={`w-6 h-6 rounded-full bg-white transition-transform ${musicEnabled ? 'translate-x-8' : 'translate-x-0'}`} />
+              </button>
+            </div>
+
+            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-bold">Resume Music After Ad</h3>
+                <p className="text-slate-400 text-sm">Auto-resume background music</p>
+              </div>
+              <button 
+                onClick={toggleResumeMusic}
+                className={`w-16 h-8 rounded-full flex items-center p-1 transition-colors ${resumeMusicAfterAd ? 'bg-primary' : 'bg-slate-600'}`}
+              >
+                <div className={`w-6 h-6 rounded-full bg-white transition-transform ${resumeMusicAfterAd ? 'translate-x-8' : 'translate-x-0'}`} />
+              </button>
+            </div>
+
+            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-8 flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-bold">Timer Duration</h3>
+                <p className="text-slate-400 text-sm">Time per question</p>
+              </div>
+              <select
+                value={timerDuration}
+                onChange={e => {
+                  playSound.click();
+                  const val = parseInt(e.target.value, 10);
+                  setTimerDurationState(val);
+                  localStorage.setItem('trivia_genius_timer_duration', val.toString());
+                }}
+                className="bg-slate-700 text-white p-2 rounded-lg font-bold border border-slate-600 focus:border-primary outline-none transition-colors appearance-none text-center"
+              >
+                <option value={10}>10s</option>
+                <option value={15}>15s</option>
+                <option value={20}>20s</option>
+                <option value={0}>No Timer</option>
+              </select>
             </div>
 
             <button 
@@ -577,21 +853,80 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="flex-1 flex flex-col items-center p-6 w-full max-w-md mx-auto z-10 mt-10"
           >
-            <h2 className="text-4xl font-display font-black text-center mb-8">Achievements</h2>
+            <h2 className="text-4xl font-display font-black text-center mb-6">Stats & Achievements</h2>
             
-            <div className="w-full space-y-4 mb-8 overflow-y-auto max-h-[60vh] no-scrollbar">
+            <div className="w-full grid grid-cols-2 gap-3 mb-6">
+              <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center">
+                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Total Correct</p>
+                <p className="text-2xl font-display font-black text-primary">{stats.totalCorrect}</p>
+              </div>
+              <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center">
+                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Max Streak</p>
+                <p className="text-2xl font-display font-black text-accent">{stats.maxStreak}</p>
+              </div>
+              <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center">
+                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Daily Played</p>
+                <p className="text-2xl font-display font-bold text-white">{stats.dailyChallengesCompleted || 0}</p>
+              </div>
+              <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center">
+                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Daily High</p>
+                <p className="text-2xl font-display font-bold text-white">{stats.dailyHighScore || 0}</p>
+              </div>
+              <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center">
+                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Avg Score</p>
+                <p className="text-2xl font-display font-bold text-white">{stats.gamesCompleted > 0 ? Math.round((stats.totalScore || 0) / stats.gamesCompleted) : 0}</p>
+              </div>
+              <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center overflow-hidden">
+                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Top Category</p>
+                <p className="text-sm font-display font-bold text-white truncate px-1">
+                  {Object.entries(stats.categoryPlays || {}).sort((a,b)=>b[1]-a[1])[0]?.[1] > 0 ? Object.entries(stats.categoryPlays || {}).sort((a,b)=>b[1]-a[1])[0][0].replace('General Knowledge', 'Gen. Knowledge') : 'None'}
+                </p>
+              </div>
+            </div>
+
+            <div className="w-full space-y-4 mb-8 overflow-y-auto max-h-[40vh] no-scrollbar">
                {[
                  { id: 'centurion', title: 'Centurion', desc: 'Answer 100 questions correctly', 
                    progress: Math.min(stats.totalCorrect, 100), max: 100, done: stats.totalCorrect >= 100 },
+                 { id: 'trivia_master', title: 'Trivia Master', desc: 'Answer 500 questions correctly', 
+                   progress: Math.min(stats.totalCorrect, 500), max: 500, done: stats.totalCorrect >= 500 },
                  { id: 'streak_master', title: 'Streak Master', desc: 'Achieve a 10-question streak', 
                    progress: Math.min(stats.maxStreak, 10), max: 10, done: stats.maxStreak >= 10 },
+                 { id: 'streak_god', title: 'Streak God', desc: 'Achieve a 20-question streak', 
+                   progress: Math.min(stats.maxStreak, 20), max: 20, done: stats.maxStreak >= 20 },
                  { id: 'brave', title: 'Brave Soul', desc: 'Play on Hard difficulty', 
                    progress: stats.hardModePlayed ? 1 : 0, max: 1, done: stats.hardModePlayed },
                  { id: 'hint_lover', title: 'Hint Lover', desc: 'Use a hint 5 times', 
                    progress: Math.min(stats.hintsUsed, 5), max: 5, done: stats.hintsUsed >= 5 },
+                 { id: 'daily_warrior', title: 'Daily Warrior', desc: 'Complete 7 daily challenges', 
+                   progress: Math.min(stats.dailyChallengesCompleted || 0, 7), max: 7, done: (stats.dailyChallengesCompleted || 0) >= 7 },
+                 { id: 'quiz_addict', title: 'Quiz Addict', desc: 'Complete 20 games', 
+                   progress: Math.min(stats.gamesCompleted || 0, 20), max: 20, done: (stats.gamesCompleted || 0) >= 20 },
                ].map(ach => (
-                 <div key={ach.id} className={`p-4 rounded-2xl flex items-center space-x-4 border-2 ${ach.done ? 'bg-accent/10 border-accent' : 'bg-slate-800 border-slate-700'}`}>
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center ${ach.done ? 'bg-accent text-slate-900' : 'bg-slate-700 text-slate-500'}`}>
+                 <motion.div 
+                    key={ach.id} 
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={(e) => {
+                      if (ach.done) {
+                        playSound.click();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const x = (rect.left + rect.width / 2) / window.innerWidth;
+                        const y = (rect.top + rect.height / 2) / window.innerHeight;
+                        confetti({
+                          particleCount: 80,
+                          spread: 60,
+                          origin: { x, y },
+                          colors: ['#00C3FF', '#FF3366', '#FFCC00'],
+                          disableForReducedMotion: true
+                        });
+                      }
+                    }}
+                    className={`p-4 rounded-2xl flex items-center space-x-4 border-2 cursor-pointer
+                      ${ach.done ? 'bg-accent/10 border-accent shadow-[0_0_15px_rgba(0,195,255,0.2)]' : 'bg-slate-800 border-slate-700 opacity-60'}`}
+                 >
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors
+                      ${ach.done ? 'bg-accent text-slate-900 shadow-[0_0_10px_#00c3ff]' : 'bg-slate-700 text-slate-500'}`}>
                       <Star size={24} />
                     </div>
                     <div className="flex-1">
@@ -603,7 +938,7 @@ export default function App() {
                         {ach.progress} / {ach.max}
                       </span>
                     </div>
-                 </div>
+                 </motion.div>
                ))}
             </div>
 
@@ -625,13 +960,46 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="flex-1 flex flex-col items-center justify-center p-6 w-full max-w-md mx-auto z-10"
           >
-            <motion.div 
-              animate={{ rotate: 360 }}
-              transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-              className="w-16 h-16 border-4 border-slate-700 border-t-secondary rounded-full mb-6"
-            />
-            <h2 className="text-2xl font-display font-bold text-white mb-2">Asking the AI...</h2>
-            <p className="text-slate-400">Generating fresh questions just for you.</p>
+            <div className="relative mb-10 w-32 h-32 flex items-center justify-center">
+              {[0, 1, 2].map((i) => (
+                <motion.div
+                  key={i}
+                  className="absolute inset-0 border-2 border-primary/50 rounded-full"
+                  initial={{ scale: 0.8, opacity: 1 }}
+                  animate={{
+                    scale: [0.8, 1.5, 2.5],
+                    opacity: [1, 0.5, 0],
+                  }}
+                  transition={{
+                    duration: 2,
+                    repeat: Infinity,
+                    delay: i * 0.6,
+                    ease: "easeOut",
+                  }}
+                />
+              ))}
+              <motion.div 
+                animate={{ 
+                  scale: [1, 1.1, 1],
+                  rotate: [0, 5, -5, 0],
+                  filter: ["drop-shadow(0 0 10px rgba(0,195,255,0.4))", "drop-shadow(0 0 25px rgba(0,195,255,0.8))", "drop-shadow(0 0 10px rgba(0,195,255,0.4))"]
+                }}
+                transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}
+                className="w-24 h-24 bg-slate-800 rounded-full flex items-center justify-center relative z-10 text-primary border border-primary/30"
+              >
+                <Brain size={48} />
+              </motion.div>
+            </div>
+            
+            <h2 className="text-3xl font-display font-black text-white mb-2 tracking-wide text-center">
+              Generating Trivia<span className="animate-pulse">...</span>
+            </h2>
+            <p className="text-slate-400 text-center font-medium">Brewing fresh questions for you</p>
+            {apiError && (
+              <div className="mt-4 p-3 bg-red-900/40 border border-red-500/50 rounded-xl text-red-200 text-sm text-center font-medium max-w-xs">
+                {apiError}
+              </div>
+            )}
           </motion.div>
         )}
 
@@ -644,12 +1012,12 @@ export default function App() {
             exit={{ opacity: 0, x: -50 }}
             className="flex-1 flex flex-col items-center justify-center p-6 w-full max-w-md mx-auto z-10"
           >
-            <div className="w-full bg-slate-800 rounded-full h-2 mb-8 overflow-hidden">
-               <motion.div 
-                className="h-full bg-secondary"
+            <div className="w-full bg-slate-800 rounded-full h-3 mb-8 overflow-hidden relative border border-slate-700/50 shadow-inner">
+              <motion.div 
+                className="absolute top-0 left-0 bottom-0 bg-gradient-to-r from-primary to-secondary"
                 initial={{ width: 0 }}
-                animate={{ width: `${((currentIdx + 1) / questions.length) * 100}%` }}
-                transition={{ duration: 0.3 }}
+                animate={{ width: `${((currentIdx) / questions.length) * 100}%` }}
+                transition={{ duration: 0.5, ease: "easeInOut" }}
               />
             </div>
             <div className="w-full text-center mb-6">
@@ -687,11 +1055,11 @@ export default function App() {
                 }`}
               >
                 <Lightbulb size={16} />
-                <span>{hintUsed ? 'Hint Used' : 'Use Hint (1/Round)'}</span>
+                <span>{hintUsed ? '50/50 Used' : '50/50 (1/Round)'}</span>
               </button>
             </div>
 
-            <div className="w-full space-y-3">
+            <div className="w-full space-y-3 overflow-hidden px-1">
               {questions[currentIdx].options.map((option, idx) => {
                 let btnStyle = "bg-slate-800 border-slate-700 text-white hover:bg-slate-700";
                 const isEliminated = eliminatedOptions.includes(idx);
@@ -716,9 +1084,18 @@ export default function App() {
                     key={idx}
                     disabled={isAnswerRevealed || isEliminated || isPaused || showSecondChance}
                     onClick={() => handleOptionClick(idx)}
+                    drag={isAnswerRevealed || isEliminated || isPaused || showSecondChance ? false : "x"}
+                    dragConstraints={{ left: 0, right: 0 }}
+                    dragElastic={0.2}
+                    onDragEnd={(e, { offset, velocity }) => {
+                      if (Math.abs(offset.x) > 40 || Math.abs(velocity.x) > 300) {
+                        handleOptionClick(idx);
+                      }
+                    }}
                     whileHover={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance) ? 1 : 1.02 }}
                     whileTap={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance) ? 1 : 0.98 }}
-                    className={`w-full p-4 rounded-xl border-b-4 font-bold text-lg text-left transition-colors flex justify-between items-center ${btnStyle}`}
+                    whileDrag={{ scale: 1.05, zIndex: 50, opacity: 0.9 }}
+                    className={`w-full p-4 rounded-xl border-b-4 font-bold text-lg text-left transition-colors flex justify-between items-center relative z-10 ${btnStyle}`}
                   >
                     <span className={isEliminated && !isAnswerRevealed ? 'line-through' : ''}>{option}</span>
                     {isAnswerRevealed && idx === questions[currentIdx].correctOptionIndex && <Check size={20} />}
@@ -733,24 +1110,27 @@ export default function App() {
             {isPaused && (
               <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center p-6 rounded-3xl">
                 <h2 className="text-4xl font-display font-black text-white mb-8">Paused</h2>
-                <button 
+                <motion.button 
+                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
                   onClick={() => { playSound.click(); setIsPaused(false); }}
                   className="w-full py-4 mb-4 rounded-xl bg-primary text-white font-bold tracking-widest uppercase hover:bg-primary/80 transition-colors"
                 >
                   Resume
-                </button>
-                <button 
+                </motion.button>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
                   onClick={() => { playSound.click(); setIsPaused(false); setGameState('SETTINGS'); }}
                   className="w-full py-4 mb-4 rounded-xl bg-slate-800 text-slate-300 font-bold tracking-widest uppercase hover:bg-slate-700 transition-colors"
                 >
                   Settings
-                </button>
-                <button 
+                </motion.button>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
                   onClick={() => { playSound.click(); setIsPaused(false); endGame(); }}
                   className="w-full py-4 rounded-xl bg-red-900/30 text-red-400 font-bold tracking-widest uppercase border border-red-900/50 hover:bg-red-900/50 transition-colors"
                 >
                   End Game
-                </button>
+                </motion.button>
               </div>
             )}
 
@@ -759,18 +1139,42 @@ export default function App() {
               <div className="absolute inset-0 bg-slate-900/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 rounded-3xl border-4 border-slate-800">
                 <h2 className="text-3xl font-display font-black text-white mb-2 text-center">Incorrect!</h2>
                 <p className="text-slate-400 text-center mb-8">Watch a short ad to get a second chance?</p>
-                <button 
+                <motion.button 
+                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
                   onClick={handleSecondChanceWatchAd}
                   className="w-full py-4 mb-4 rounded-xl bg-secondary text-slate-900 font-bold tracking-widest uppercase hover:bg-cyan-400 transition-colors shadow-[0_0_20px_rgba(0,195,255,0.4)]"
                 >
                   Watch Ad
-                </button>
-                <button 
+                </motion.button>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
                   onClick={handleSecondChanceDecline}
                   className="w-full py-4 rounded-xl bg-transparent text-slate-500 font-bold tracking-widest uppercase hover:text-slate-300 transition-colors"
                 >
                   No Thanks
-                </button>
+                </motion.button>
+              </div>
+            )}
+
+            {/* QUIT CONFIRM MODAL */}
+            {showQuitConfirm && (
+              <div className="absolute inset-0 bg-slate-900/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 rounded-3xl border-4 border-slate-800">
+                <h2 className="text-3xl font-display font-black text-white mb-2 text-center">Quit Game?</h2>
+                <p className="text-slate-400 mb-8 text-center">Are you sure you want to quit? Your progress in this round will be lost.</p>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+                  onClick={handleQuit}
+                  className="w-full py-4 mb-4 rounded-xl bg-red-600 text-white font-bold tracking-widest uppercase hover:bg-red-500 transition-colors"
+                >
+                  Yes
+                </motion.button>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+                  onClick={cancelQuit}
+                  className="w-full py-4 rounded-xl bg-slate-800 text-slate-300 font-bold tracking-widest uppercase hover:bg-slate-700 transition-colors"
+                >
+                  No
+                </motion.button>
               </div>
             )}
            </motion.div>
@@ -811,14 +1215,60 @@ export default function App() {
               <p className="text-6xl font-display font-black text-white text-shadow-sm">{score}</p>
             </div>
 
+            <div className="w-full bg-slate-800 p-4 rounded-xl mb-6">
+              <p className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 text-center">Next Game Category</p>
+              <motion.select
+                key={category}
+                initial={{ scale: 1.05, borderColor: '#00C3FF', backgroundColor: '#1E293B' }}
+                animate={{ scale: 1, borderColor: '#475569', backgroundColor: '#334155' }}
+                transition={{ duration: 0.3 }}
+                value={category}
+                onChange={e => { 
+                  playSound.click(); 
+                  const newCat = e.target.value as Category;
+                  setCategory(newCat); 
+                  switch(newCat) {
+                    case 'Science': setTheme('space'); break;
+                    case 'History': setTheme('vintage'); break;
+                    case 'Pop Culture': setTheme('cyberpunk'); break;
+                    case 'General Knowledge': setTheme('default'); break;
+                  }
+                }}
+                className="w-full text-white p-3 rounded-lg font-bold text-center border focus:border-primary outline-none transition-colors appearance-none"
+              >
+                <option value="General Knowledge">General Knowledge</option>
+                <option value="Science">Science</option>
+                <option value="History">History</option>
+                <option value="Pop Culture">Pop Culture</option>
+              </motion.select>
+              <motion.button 
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={startGame}
+                className="w-full py-3 mt-4 rounded-lg bg-primary text-white font-bold tracking-wider hover:bg-primary/80 transition-colors flex justify-center items-center space-x-2"
+              >
+                <Play size={18} fill="currentColor" />
+                <span className="truncate">PLAY {category.toUpperCase()}</span>
+              </motion.button>
+            </div>
+
             <motion.button 
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={handleShare}
-              className="w-full py-4 mb-4 rounded-xl bg-[#1DA1F2] text-white font-bold tracking-wider hover:bg-[#1a91da] transition-colors flex justify-center items-center space-x-2"
+              className="w-full py-4 mb-3 rounded-xl bg-[#1DA1F2] text-white font-bold tracking-wider hover:bg-[#1a91da] transition-colors flex justify-center items-center space-x-2"
             >
               <Share2 size={20} />
               <span>SHARE SCORE</span>
+            </motion.button>
+            <motion.button 
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={handleShareLeaderboard}
+              className="w-full py-4 mb-4 rounded-xl bg-orange-500 text-white font-bold tracking-wider hover:bg-orange-600 transition-colors flex justify-center items-center space-x-2 shadow-lg"
+            >
+              <Trophy size={20} />
+              <span>SHARE LEADERBOARD RANK</span>
             </motion.button>
 
             <motion.button 
@@ -848,9 +1298,18 @@ export default function App() {
         </div>
       )}
 
-      {/* Decorative Background Elements */}
-      <div className="fixed top-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-primary/10 blur-[100px] pointer-events-none" />
-      <div className="fixed bottom-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-secondary/10 blur-[100px] pointer-events-none" />
+      <AnimatePresence mode="popLayout">
+        <motion.div
+          key={themePreview || theme}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 1 }}
+          className="absolute inset-0 z-0 pointer-events-none"
+        >
+          <AnimatedBackground theme={themePreview || theme} />
+        </motion.div>
+      </AnimatePresence>
       
     </div>
   );

@@ -8,7 +8,7 @@ export type TriviaQuestion = {
   correctOptionIndex: number;
 };
 
-export async function generateTriviaQuestions(count: number = 5, difficulty: string = 'Medium', category: string = 'General Knowledge'): Promise<TriviaQuestion[]> {
+export async function generateTriviaQuestions(count: number = 5, difficulty: string = 'Medium', category: string = 'General Knowledge'): Promise<{ questions: TriviaQuestion[], error?: string }> {
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -45,7 +45,7 @@ export async function generateTriviaQuestions(count: number = 5, difficulty: str
     const questions: TriviaQuestion[] = JSON.parse(jsonStr);
     
     // Ensure the output matches our expectations
-    return questions.filter(q => 
+    const validQuestions = questions.filter(q => 
         q.question && 
         Array.isArray(q.options) && 
         q.options.length === 4 && 
@@ -53,20 +53,28 @@ export async function generateTriviaQuestions(count: number = 5, difficulty: str
         q.correctOptionIndex >= 0 && 
         q.correctOptionIndex <= 3
     );
-  } catch (error) {
+    return { questions: validQuestions };
+  } catch (error: any) {
     console.error("Failed to generate trivia questions:", error);
+    let errorMessage = "Failed to generate questions.";
+    if (error?.message?.includes('429') || error?.status === 429) {
+      errorMessage = "AI Rate limit exceeded. Please try again soon.";
+    }
     // Fallback questions if generation fails
-    return [
-      {
-        question: "What is the capital of France?",
-        options: ["London", "Berlin", "Paris", "Madrid"],
-        correctOptionIndex: 2
-      },
-      {
-        question: "Which planet is known as the Red Planet?",
-        options: ["Earth", "Mars", "Jupiter", "Venus"],
-        correctOptionIndex: 1
-      }
-    ];
+    return {
+      error: errorMessage,
+      questions: [
+        {
+          question: "What is the capital of France?",
+          options: ["London", "Berlin", "Paris", "Madrid"],
+          correctOptionIndex: 2
+        },
+        {
+          question: "Which planet is known as the Red Planet?",
+          options: ["Earth", "Mars", "Jupiter", "Venus"],
+          correctOptionIndex: 1
+        }
+      ]
+    };
   }
 }
