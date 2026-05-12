@@ -6,7 +6,7 @@ import { AnimatedBackground } from './components/AnimatedBackground';
 import { AdPlaceholder } from './components/AdPlaceholder';
 import { generateTriviaQuestions, TriviaQuestion } from './lib/gemini';
 import { AnimatedNumber } from './components/AnimatedNumber';
-import { playSound, getSoundEnabled, setSoundEnabled, playBGM, stopBGM, setMusicEnabled } from './lib/sounds';
+import { playSound, getSoundEnabled, setSoundEnabled, playBGM, stopBGM, setMusicEnabled, setMasterVolume, getMasterVolume } from './lib/sounds';
 
 type GameState = 'MENU' | 'LOADING' | 'PLAYING' | 'ADVERT' | 'ADVERT_REWARDED' | 'GAME_OVER' | 'SETTINGS' | 'ACHIEVEMENTS';
 type Difficulty = 'Easy' | 'Medium' | 'Hard';
@@ -55,6 +55,7 @@ export default function App() {
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(0);
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
+  const [isProcessingOption, setIsProcessingOption] = useState<number | null>(null);
   const [isAnswerRevealed, setIsAnswerRevealed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   
@@ -81,6 +82,8 @@ export default function App() {
 
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
   const [musicEnabled, setMusicToggle] = useState(true);
+  const [musicVolume, setMusicVolume] = useState(0.5);
+  const [showMusicControls, setShowMusicControls] = useState(false);
   const [timerDuration, setTimerDurationState] = useState<number>(15);
   const [scorePopup, setScorePopup] = useState<number | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
@@ -261,15 +264,15 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (gameState === 'PLAYING' && !isAnswerRevealed && timeLeft > 0 && !isPaused && !showSecondChance && (isDailyChallenge || timerDuration > 0)) {
+    if (gameState === 'PLAYING' && !isAnswerRevealed && isProcessingOption === null && timeLeft > 0 && !isPaused && !showSecondChance && (isDailyChallenge || timerDuration > 0)) {
       const timerId = setTimeout(() => {
         setTimeLeft(t => t - 1);
       }, 1000);
       return () => clearTimeout(timerId);
-    } else if (gameState === 'PLAYING' && !isAnswerRevealed && timeLeft === 0 && !isPaused && !showSecondChance && (isDailyChallenge || timerDuration > 0)) {
+    } else if (gameState === 'PLAYING' && !isAnswerRevealed && isProcessingOption === null && timeLeft === 0 && !isPaused && !showSecondChance && (isDailyChallenge || timerDuration > 0)) {
       handleOptionClick(-1); // -1 signifies timeout
     }
-  }, [gameState, isAnswerRevealed, timeLeft, isPaused, showSecondChance]);
+  }, [gameState, isAnswerRevealed, isProcessingOption, timeLeft, isPaused, showSecondChance]);
 
   const fireConfetti = () => {
     confetti({
@@ -282,14 +285,14 @@ export default function App() {
 
   const handleGameOver = () => {
     const newTotalScore = (stats.totalScore || 0) + score;
-    const catPlays = { ...stats.categoryPlays } || {
+    const catPlays = (stats.categoryPlays ? { ...stats.categoryPlays } : {
       'General Knowledge': 0,
       'Science': 0,
       'History': 0,
       'Pop Culture': 0,
-    };
+    }) as any;
     if (category in catPlays) {
-      catPlays[category as keyof typeof catPlays] = (catPlays[category as keyof typeof catPlays] || 0) + 1;
+      catPlays[category as string] = (catPlays[category as string] || 0) + 1;
     }
 
     if (isDailyChallenge) {
@@ -335,54 +338,63 @@ export default function App() {
   };
 
   const handleOptionClick = (idx: number) => {
-    if (isAnswerRevealed || isPaused || showSecondChance) return;
+    if (isAnswerRevealed || isPaused || showSecondChance || isProcessingOption !== null) return;
     
-    playSound.click();
-    setSelectedOption(idx);
-    setIsAnswerRevealed(true);
-
-    const isCorrect = idx === questions[currentIdx].correctOptionIndex;
-    
-    if (isCorrect) {
-      const difficultyMultiplier = difficulty === 'Easy' ? 0.5 : difficulty === 'Hard' ? 2 : 1;
-      const pointsGained = 100 * difficultyMultiplier;
-      const newScore = score + pointsGained;
-      setScore(newScore);
-      setScorePopup(pointsGained);
-      let newHighScoreTriggered = false;
-      if (newScore > highScore && highScore > 0 && !isNewHighScore) {
-        setIsNewHighScore(true);
-        setShimmerScore(true);
-        newHighScoreTriggered = true;
-        confetti({
-          particleCount: 150,
-          spread: 100,
-          origin: { y: 0.5 },
-          colors: ['#FFD700', '#FFA500', '#FF8C00']
-        });
-      }
-      const newStreak = stats.currentStreak + 1;
-      updateStats({ 
-        totalCorrect: stats.totalCorrect + 1,
-        currentStreak: newStreak,
-        maxStreak: Math.max(stats.maxStreak, newStreak)
-      });
-      
-      playSound.cashRegister();
-      playSound.correct();
-      if (!newHighScoreTriggered) fireConfetti();
-      
-      setTimeout(() => advanceQuestion(), 1500);
-    } else {
-      updateStats({ currentStreak: 0 });
-      playSound.incorrect();
-      
-      if (!secondChanceUsed && !isDailyChallenge && idx !== -1) {
-         setTimeout(() => setShowSecondChance(true), 1000);
-      } else {
-         setTimeout(() => advanceQuestion(), 1500);
-      }
+    if (idx !== -1) {
+      playSound.click();
+      setIsProcessingOption(idx);
     }
+    
+    setTimeout(() => {
+      if (idx !== -1) {
+        setIsProcessingOption(null);
+      }
+      setSelectedOption(idx);
+      setIsAnswerRevealed(true);
+
+      const isCorrect = idx === questions[currentIdx].correctOptionIndex;
+      
+      if (isCorrect) {
+        const difficultyMultiplier = difficulty === 'Easy' ? 0.5 : difficulty === 'Hard' ? 2 : 1;
+        const pointsGained = 100 * difficultyMultiplier;
+        const newScore = score + pointsGained;
+        setScore(newScore);
+        setScorePopup(pointsGained);
+        let newHighScoreTriggered = false;
+        if (newScore > highScore && highScore > 0 && !isNewHighScore) {
+          setIsNewHighScore(true);
+          setShimmerScore(true);
+          newHighScoreTriggered = true;
+          confetti({
+            particleCount: 150,
+            spread: 100,
+            origin: { y: 0.5 },
+            colors: ['#FFD700', '#FFA500', '#FF8C00']
+          });
+        }
+        const newStreak = stats.currentStreak + 1;
+        updateStats({ 
+          totalCorrect: stats.totalCorrect + 1,
+          currentStreak: newStreak,
+          maxStreak: Math.max(stats.maxStreak, newStreak)
+        });
+        
+        playSound.cashRegister();
+        playSound.correct();
+        if (!newHighScoreTriggered) fireConfetti();
+        
+        setTimeout(() => advanceQuestion(), 1500);
+      } else {
+        updateStats({ currentStreak: 0 });
+        if (idx !== -1) playSound.incorrect();
+        
+        if (!secondChanceUsed && !isDailyChallenge && idx !== -1) {
+           setTimeout(() => setShowSecondChance(true), 1000);
+        } else {
+           setTimeout(() => advanceQuestion(), 1500);
+        }
+      }
+    }, idx === -1 ? 0 : 400);
   };
 
   const useSkip = () => {
@@ -596,6 +608,54 @@ export default function App() {
           <div className="flex space-x-2">
             {gameState === 'PLAYING' && (
               <>
+                <div className="relative">
+                  <button 
+                    onClick={() => { playSound.click(); setShowMusicControls(!showMusicControls); }}
+                    className={`px-4 py-2 bg-slate-800 rounded-full text-xs font-bold uppercase tracking-wider transition-colors flex items-center space-x-1 ${showMusicControls ? 'text-white' : 'text-slate-300'} hover:bg-slate-700`}
+                  >
+                    <span>Music</span>
+                  </button>
+                  <AnimatePresence>
+                    {showMusicControls && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="absolute top-full mt-2 right-0 bg-slate-800 p-3 rounded-xl shadow-xl border border-slate-700 w-48 z-50 flex flex-col space-y-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-slate-300 font-bold uppercase">BGM</span>
+                          <button 
+                            onClick={() => {
+                              const newEnabled = !musicEnabled;
+                              setMusicToggle(newEnabled);
+                              setMusicEnabled(newEnabled);
+                            }}
+                            className={`w-10 h-5 rounded-full flex items-center p-1 transition-colors ${musicEnabled ? 'bg-primary' : 'bg-slate-600'}`}
+                          >
+                            <div className={`w-3 h-3 rounded-full bg-white transition-transform ${musicEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                          </button>
+                        </div>
+                        <div className="flex flex-col space-y-1">
+                          <span className="text-xs text-slate-400">Volume</span>
+                          <input 
+                            type="range" 
+                            min="0" 
+                            max="1" 
+                            step="0.05"
+                            value={musicVolume}
+                            onChange={(e) => {
+                              const vol = parseFloat(e.target.value);
+                              setMusicVolume(vol);
+                              setMasterVolume(vol);
+                            }}
+                            className="w-full accent-primary h-2 bg-slate-700 rounded-full appearance-none outline-none"
+                          />
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
                 <button 
                   onClick={confirmQuit}
                   className="px-4 py-2 bg-slate-800 rounded-full text-xs font-bold uppercase tracking-wider text-red-400 hover:bg-slate-700 hover:text-white transition-colors"
@@ -671,8 +731,8 @@ export default function App() {
                 transition={{ duration: 0.3 }}
                 value={category}
                 onChange={e => { 
-                  playSound.click(); 
                   const newCat = e.target.value as Category;
+                  playSound.categorySelect(newCat); 
                   setCategory(newCat); 
                   switch(newCat) {
                     case 'Science': setTheme('space'); break;
@@ -690,16 +750,28 @@ export default function App() {
               </motion.select>
             </div>
 
-            <div className="flex space-x-2 mb-4 bg-slate-800 p-1 rounded-full w-full">
-              {(['Easy', 'Medium', 'Hard'] as Difficulty[]).map(level => (
-                <button
-                  key={level}
-                  onClick={() => { playSound.click(); setDifficulty(level); }}
-                  className={`flex-1 py-3 px-4 rounded-full font-bold text-sm transition-all ${difficulty === level ? 'bg-secondary text-white shadow-md' : 'text-slate-400 hover:text-white'}`}
-                >
-                  {level}
-                </button>
-              ))}
+            <div className="flex flex-col w-full mb-4 relative z-10">
+              <div className="flex space-x-2 bg-slate-800 p-1 rounded-full w-full relative z-20">
+                {(['Easy', 'Medium', 'Hard'] as Difficulty[]).map(level => (
+                  <button
+                    key={level}
+                    onClick={() => { playSound.click(); setDifficulty(level); }}
+                    className={`flex-1 py-3 px-4 rounded-full font-bold text-sm transition-all ${difficulty === level ? 'bg-secondary text-white shadow-md' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
+              <motion.div 
+                key={difficulty}
+                initial={{ opacity: 0, y: -5 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-center mt-2 text-xs text-slate-400 min-h-[20px]"
+              >
+                {difficulty === 'Easy' && 'Easy mode: Simple questions, 0.5x score multiplier.'}
+                {difficulty === 'Medium' && 'Medium mode: Standard questions, 1x score multiplier.'}
+                {difficulty === 'Hard' && 'Hard mode: Challenging questions, 2x score multiplier.'}
+              </motion.div>
             </div>
 
             <div className="flex space-x-2 mb-8 bg-slate-800 p-1 rounded-full w-full overflow-x-auto scroll-smooth no-scrollbar relative z-10" style={{ scrollSnapType: 'x mandatory' }}>
@@ -835,6 +907,44 @@ export default function App() {
               </select>
             </div>
 
+            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-8 flex flex-col items-center justify-between border-t border-red-500/20">
+              <div className="w-full flex items-center justify-between">
+                <div>
+                  <h3 className="text-xl font-bold text-red-400">Reset Data</h3>
+                  <p className="text-slate-400 text-xs">Clear all stats and achievements</p>
+                </div>
+                <button 
+                  onClick={() => {
+                    playSound.click();
+                    if (window.confirm('Are you sure you want to completely reset all your statistics and high scores? This cannot be undone.')) {
+                      setStats({
+                        totalCorrect: 0,
+                        maxStreak: 0,
+                        hardModePlayed: false,
+                        hintsUsed: 0,
+                        dailyChallengesCompleted: 0,
+                        dailyHighScore: 0,
+                        gamesCompleted: 0,
+                        totalScore: 0,
+                        categoryPlays: {
+                          'General Knowledge': 0,
+                          'Science': 0,
+                          'History': 0,
+                          'Pop Culture': 0,
+                        }
+                      });
+                      setHighScore(0);
+                      localStorage.removeItem('trivia_genius_high_score');
+                      localStorage.removeItem('trivia_genius_stats');
+                    }
+                  }}
+                  className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors bg-red-900/30 text-red-500 hover:bg-red-900/50 hover:text-red-400 border border-red-500/30`}
+                >
+                  <Trophy size={18} />
+                </button>
+              </div>
+            </div>
+
             <button 
               onClick={() => { playSound.click(); setGameState('MENU'); }}
               className="w-full py-4 rounded-xl bg-slate-800 text-slate-300 font-bold hover:bg-slate-700 transition-colors"
@@ -879,7 +989,7 @@ export default function App() {
               <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center overflow-hidden">
                 <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Top Category</p>
                 <p className="text-sm font-display font-bold text-white truncate px-1">
-                  {Object.entries(stats.categoryPlays || {}).sort((a,b)=>b[1]-a[1])[0]?.[1] > 0 ? Object.entries(stats.categoryPlays || {}).sort((a,b)=>b[1]-a[1])[0][0].replace('General Knowledge', 'Gen. Knowledge') : 'None'}
+                  {Object.entries(stats.categoryPlays || {}).sort((a,b)=>(b[1] as number)-(a[1] as number))[0] && (Object.entries(stats.categoryPlays || {}).sort((a,b)=>(b[1] as number)-(a[1] as number))[0][1] as number) > 0 ? Object.entries(stats.categoryPlays || {}).sort((a,b)=>(b[1] as number)-(a[1] as number))[0][0].replace('General Knowledge', 'Gen. Knowledge') : 'None'}
                 </p>
               </div>
             </div>
@@ -1082,9 +1192,9 @@ export default function App() {
                 return (
                   <motion.button
                     key={idx}
-                    disabled={isAnswerRevealed || isEliminated || isPaused || showSecondChance}
+                    disabled={isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null}
                     onClick={() => handleOptionClick(idx)}
-                    drag={isAnswerRevealed || isEliminated || isPaused || showSecondChance ? false : "x"}
+                    drag={isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null ? false : "x"}
                     dragConstraints={{ left: 0, right: 0 }}
                     dragElastic={0.2}
                     onDragEnd={(e, { offset, velocity }) => {
@@ -1092,8 +1202,10 @@ export default function App() {
                         handleOptionClick(idx);
                       }
                     }}
-                    whileHover={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance) ? 1 : 1.02 }}
-                    whileTap={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance) ? 1 : 0.98 }}
+                    animate={isProcessingOption === idx ? { scale: [1, 0.95, 1.05, 1] } : { scale: 1 }}
+                    transition={{ duration: 0.4 }}
+                    whileHover={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null) ? 1 : 1.02 }}
+                    whileTap={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null) ? 1 : 0.98 }}
                     whileDrag={{ scale: 1.05, zIndex: 50, opacity: 0.9 }}
                     className={`w-full p-4 rounded-xl border-b-4 font-bold text-lg text-left transition-colors flex justify-between items-center relative z-10 ${btnStyle}`}
                   >
@@ -1224,8 +1336,8 @@ export default function App() {
                 transition={{ duration: 0.3 }}
                 value={category}
                 onChange={e => { 
-                  playSound.click(); 
                   const newCat = e.target.value as Category;
+                  playSound.categorySelect(newCat); 
                   setCategory(newCat); 
                   switch(newCat) {
                     case 'Science': setTheme('space'); break;
@@ -1245,10 +1357,10 @@ export default function App() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={startGame}
-                className="w-full py-3 mt-4 rounded-lg bg-primary text-white font-bold tracking-wider hover:bg-primary/80 transition-colors flex justify-center items-center space-x-2"
+                className="w-full py-4 mt-4 rounded-xl bg-primary text-white font-black tracking-widest text-lg hover:bg-primary/80 transition-colors flex justify-center items-center space-x-2"
               >
-                <Play size={18} fill="currentColor" />
-                <span className="truncate">PLAY {category.toUpperCase()}</span>
+                <Play size={20} fill="currentColor" />
+                <span>PLAY AGAIN</span>
               </motion.button>
             </div>
 
