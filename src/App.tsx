@@ -90,6 +90,8 @@ export default function App() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [resumeMusicAfterAd, setResumeMusicAfterAd] = useState(false);
   const [themePreview, setThemePreview] = useState<Theme | null>(null);
+  const [prevGameState, setPrevGameState] = useState<GameState | null>(null);
+  const [showCategoryConfirm, setShowCategoryConfirm] = useState(false);
 
   // Stats updater
   const updateStats = (updates: Partial<Stats>) => {
@@ -171,7 +173,7 @@ export default function App() {
     setMusicEnabled(next);
     localStorage.setItem('trivia_genius_music', String(next));
     if (next) {
-      playBGM();
+      playBGM(theme);
     } else {
       stopBGM();
     }
@@ -184,23 +186,35 @@ export default function App() {
     localStorage.setItem('trivia_genius_resume_music', String(next));
   };
 
-  const startGame = async () => {
+  const handleStartRequest = () => {
     playSound.click();
     if (!playerName || playerName.trim().length < 2) {
       setNameError("Please enter a name (at least 2 characters).");
       return;
     }
     setNameError(null);
+    setShowCategoryConfirm(true);
+  };
+
+  const startGame = async () => {
+    playSound.click();
+    setShowCategoryConfirm(false);
     setApiError(null);
-    playBGM();
+    playBGM(theme);
     localStorage.setItem('trivia_genius_player_name', playerName);
     localStorage.setItem('trivia_genius_theme', theme);
     if (difficulty === 'Hard' && !stats.hardModePlayed) updateStats({ hardModePlayed: true });
+    
+    // Easter Egg
+    const isSpeedrun = playerName.toLowerCase().trim() === 'speedrun';
+    const newTimerDuration = isSpeedrun ? 5 : 15;
+    setTimerDurationState(newTimerDuration);
+
     setScore(0);
     setIsNewHighScore(false);
     setIsDailyChallenge(false);
     setGameState('LOADING');
-    await fetchQuestions();
+    await fetchQuestions(newTimerDuration);
   };
 
   const startDailyChallenge = async () => {
@@ -211,7 +225,7 @@ export default function App() {
     }
     setNameError(null);
     setApiError(null);
-    playBGM();
+    playBGM(theme);
     localStorage.setItem('trivia_genius_player_name', playerName);
     localStorage.setItem('trivia_genius_theme', theme);
     
@@ -245,7 +259,7 @@ export default function App() {
     setGameState('PLAYING');
   };
 
-  const fetchQuestions = async () => {
+  const fetchQuestions = async (forcedDuration?: number) => {
     setIsLoading(true);
     setApiError(null);
     const { questions: newQuestions, error } = await generateTriviaQuestions(QUESTIONS_PER_ROUND, difficulty, category);
@@ -258,7 +272,7 @@ export default function App() {
     setSkipUsed(false);
     setSecondChanceUsed(false);
     setEliminatedOptions([]);
-    setTimeLeft(isDailyChallenge ? DAILY_SECONDS : timerDuration);
+    setTimeLeft(isDailyChallenge ? DAILY_SECONDS : (forcedDuration ?? timerDuration));
     setIsLoading(false);
     setGameState('PLAYING');
   };
@@ -284,6 +298,7 @@ export default function App() {
   };
 
   const handleGameOver = () => {
+    playSound.gameOver();
     const newTotalScore = (stats.totalScore || 0) + score;
     const catPlays = (stats.categoryPlays ? { ...stats.categoryPlays } : {
       'General Knowledge': 0,
@@ -358,6 +373,18 @@ export default function App() {
         const difficultyMultiplier = difficulty === 'Easy' ? 0.5 : difficulty === 'Hard' ? 2 : 1;
         const pointsGained = 100 * difficultyMultiplier;
         const newScore = score + pointsGained;
+        
+        const milestones = [1000, 5000, 10000, 20000, 50000, 100000];
+        const crossedMilestone = milestones.some(m => score < m && newScore >= m);
+        if (crossedMilestone) {
+          confetti({
+            particleCount: 250,
+            spread: 120,
+            origin: { y: 0.5 },
+            colors: ['#00C3FF', '#FF3366', '#FFCC00', '#00FF00']
+          });
+        }
+        
         setScore(newScore);
         setScorePopup(pointsGained);
         let newHighScoreTriggered = false;
@@ -462,7 +489,7 @@ export default function App() {
       setMusicEnabled(false);
       localStorage.setItem('trivia_genius_music', 'false');
     } else if (musicEnabled) {
-      playBGM();
+      playBGM(theme);
     }
     setSecondChanceUsed(true);
     setGameState('PLAYING');
@@ -477,7 +504,7 @@ export default function App() {
       setMusicEnabled(false);
       localStorage.setItem('trivia_genius_music', 'false');
     } else if (musicEnabled) {
-      playBGM();
+      playBGM(theme);
     }
     setGameState('LOADING');
     await fetchQuestions();
@@ -578,9 +605,9 @@ export default function App() {
             <div className="flex items-center gap-2 relative">
               <motion.span 
                 key={score}
-                initial={{ scale: 1.3 }}
-                animate={{ scale: 1 }}
-                transition={{ type: "spring", stiffness: 300, damping: 15 }}
+                initial={{ scale: 1 }}
+                animate={{ scale: [1, 1.3, 1] }}
+                transition={{ duration: 0.3, ease: "easeOut" }}
                 className="text-2xl font-display font-bold text-accent inline-block origin-left"
               >
                 <AnimatedNumber value={score} />
@@ -656,6 +683,18 @@ export default function App() {
                     )}
                   </AnimatePresence>
                 </div>
+                <button 
+                  onClick={() => {
+                    playSound.click();
+                    setIsPaused(true);
+                    setPrevGameState(gameState);
+                    setGameState('SETTINGS');
+                  }}
+                  className="w-8 h-8 flex items-center justify-center bg-slate-800 rounded-full text-slate-300 hover:bg-slate-700 transition-colors"
+                  aria-label="Settings"
+                >
+                  <Settings size={14} />
+                </button>
                 <button 
                   onClick={confirmQuit}
                   className="px-4 py-2 bg-slate-800 rounded-full text-xs font-bold uppercase tracking-wider text-red-400 hover:bg-slate-700 hover:text-white transition-colors"
@@ -774,26 +813,52 @@ export default function App() {
               </motion.div>
             </div>
 
-            <div className="flex space-x-2 mb-8 bg-slate-800 p-1 rounded-full w-full overflow-x-auto scroll-smooth no-scrollbar relative z-10" style={{ scrollSnapType: 'x mandatory' }}>
-              {(['default', 'space', 'underwater', 'fantasy', 'cyberpunk', 'vintage', 'scifi'] as Theme[]).map(t => (
-                <motion.button
-                  whileTap={{ scale: 0.95 }}
-                  onHoverStart={() => setThemePreview(t)}
-                  onHoverEnd={() => setThemePreview(null)}
-                  key={t}
-                  onClick={() => { playSound.click(); setTheme(t); setThemePreview(null); }}
-                  className={`py-2 px-6 rounded-full font-bold text-xs uppercase transition-all whitespace-nowrap scroll-snap-align-start ${theme === t ? 'bg-primary text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}
-                  style={{ scrollSnapAlign: 'start' }}
-                >
-                  {t}
-                </motion.button>
-              ))}
+            <div className="flex flex-col w-full mb-8 relative z-10">
+              <div className="flex space-x-2 bg-slate-800 p-1 rounded-full w-full overflow-x-auto scroll-smooth no-scrollbar" style={{ scrollSnapType: 'x mandatory' }}>
+                {(['default', 'space', 'underwater', 'fantasy', 'cyberpunk', 'vintage', 'scifi'] as Theme[]).map(t => (
+                  <motion.button
+                    whileTap={{ scale: 0.95 }}
+                    onHoverStart={() => setThemePreview(t)}
+                    onHoverEnd={() => setThemePreview(null)}
+                    key={t}
+                    onClick={() => { playSound.click(); setTheme(t); setThemePreview(null); }}
+                    className={`py-2 px-6 rounded-full font-bold text-xs uppercase transition-all whitespace-nowrap scroll-snap-align-start ${theme === t ? 'bg-primary text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}
+                    style={{ scrollSnapAlign: 'start' }}
+                  >
+                    {t}
+                  </motion.button>
+                ))}
+              </div>
+              <div className="h-6 mt-2 flex justify-center items-center">
+                <AnimatePresence mode="wait">
+                  {themePreview && (
+                    <motion.div
+                      key={themePreview}
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 5 }}
+                      transition={{ duration: 0.2 }}
+                      className="text-xs text-slate-300 bg-slate-800/80 px-3 py-1 rounded-full backdrop-blur-sm"
+                    >
+                      {
+                        themePreview === 'space' ? 'A journey through stars and nebulas' :
+                        themePreview === 'underwater' ? 'Deep sea exploration' :
+                        themePreview === 'fantasy' ? 'Magical realms and mythical creatures' :
+                        themePreview === 'cyberpunk' ? 'Neon-lit futuristic city' :
+                        themePreview === 'vintage' ? 'Sepia tones and classic vibes' :
+                        themePreview === 'scifi' ? 'High-tech interfaces and neon' :
+                        'Clean and modern default theme'
+                      }
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             </div>
 
             <motion.button 
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={startGame}
+              onClick={handleStartRequest}
               className="w-full py-5 mb-4 rounded-2xl bg-gradient-to-r from-primary to-secondary text-white font-display font-bold text-2xl shadow-xl hover:shadow-primary/50 transition-all flex items-center justify-center space-x-2"
             >
               <Play fill="currentColor" />
@@ -872,6 +937,26 @@ export default function App() {
               </button>
             </div>
 
+            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-4">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold">Master Volume</h3>
+                <span className="text-slate-400 font-mono">{Math.round(musicVolume * 100)}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0" 
+                max="1" 
+                step="0.05"
+                value={musicVolume}
+                onChange={(e) => {
+                  const vol = parseFloat(e.target.value);
+                  setMusicVolume(vol);
+                  setMasterVolume(vol);
+                }}
+                className="w-full accent-primary h-2 bg-slate-700 rounded-full appearance-none outline-none"
+              />
+            </div>
+
             <div className="w-full bg-slate-800 rounded-2xl p-6 mb-4 flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-bold">Resume Music After Ad</h3>
@@ -946,10 +1031,18 @@ export default function App() {
             </div>
 
             <button 
-              onClick={() => { playSound.click(); setGameState('MENU'); }}
+              onClick={() => { 
+                playSound.click(); 
+                if (prevGameState) {
+                  setGameState(prevGameState);
+                  setPrevGameState(null);
+                } else {
+                  setGameState('MENU'); 
+                }
+              }}
               className="w-full py-4 rounded-xl bg-slate-800 text-slate-300 font-bold hover:bg-slate-700 transition-colors"
             >
-              BACK TO MENU
+              {prevGameState ? 'BACK' : 'BACK TO MENU'}
             </button>
           </motion.div>
         )}
@@ -1271,22 +1364,24 @@ export default function App() {
             {/* QUIT CONFIRM MODAL */}
             {showQuitConfirm && (
               <div className="absolute inset-0 bg-slate-900/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 rounded-3xl border-4 border-slate-800">
-                <h2 className="text-3xl font-display font-black text-white mb-2 text-center">Quit Game?</h2>
-                <p className="text-slate-400 mb-8 text-center">Are you sure you want to quit? Your progress in this round will be lost.</p>
-                <motion.button 
-                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
-                  onClick={handleQuit}
-                  className="w-full py-4 mb-4 rounded-xl bg-red-600 text-white font-bold tracking-widest uppercase hover:bg-red-500 transition-colors"
-                >
-                  Yes
-                </motion.button>
-                <motion.button 
-                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
-                  onClick={cancelQuit}
-                  className="w-full py-4 rounded-xl bg-slate-800 text-slate-300 font-bold tracking-widest uppercase hover:bg-slate-700 transition-colors"
-                >
-                  No
-                </motion.button>
+                <h2 className="text-3xl font-display font-black text-white mb-2 text-center">Are you sure you want to quit?</h2>
+                <p className="text-slate-400 mb-8 text-center">Your progress in this round will be lost.</p>
+                <div className="flex gap-4 w-full">
+                  <motion.button 
+                    whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+                    onClick={handleQuit}
+                    className="flex-1 py-4 rounded-xl bg-red-600 text-white font-bold tracking-widest uppercase hover:bg-red-500 transition-colors"
+                  >
+                    Yes
+                  </motion.button>
+                  <motion.button 
+                    whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+                    onClick={cancelQuit}
+                    className="flex-1 py-4 rounded-xl bg-slate-800 text-slate-300 font-bold tracking-widest uppercase hover:bg-slate-700 transition-colors"
+                  >
+                    No
+                  </motion.button>
+                </div>
               </div>
             )}
            </motion.div>
@@ -1356,7 +1451,7 @@ export default function App() {
               <motion.button 
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={startGame}
+                onClick={handleStartRequest}
                 className="w-full py-4 mt-4 rounded-xl bg-primary text-white font-black tracking-widest text-lg hover:bg-primary/80 transition-colors flex justify-center items-center space-x-2"
               >
                 <Play size={20} fill="currentColor" />
@@ -1386,7 +1481,7 @@ export default function App() {
             <motion.button 
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={startGame}
+              onClick={handleStartRequest}
               className="w-full py-5 mb-4 rounded-2xl bg-secondary text-white font-display font-bold text-xl shadow-xl hover:shadow-secondary/50 transition-all flex items-center justify-center space-x-2"
             >
               <RotateCcw />
@@ -1401,9 +1496,35 @@ export default function App() {
           </motion.div>
         )}
 
+        {/* CATEGORY CONFIRM MODAL */}
+        {showCategoryConfirm && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-slate-900/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 rounded-3xl border-4 border-slate-800"
+          >
+            <h2 className="text-3xl font-display font-black text-white mb-2 text-center">Start Game?</h2>
+            <p className="text-slate-400 mb-8 text-center text-lg">Start with <strong className="text-primary">{category}</strong> category?</p>
+            <div className="flex gap-4 w-full max-w-xs">
+              <motion.button 
+                whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+                onClick={startGame}
+                className="flex-1 py-4 rounded-xl bg-primary text-white font-bold tracking-widest uppercase hover:bg-primary/80 transition-colors"
+              >
+                Yes
+              </motion.button>
+              <motion.button 
+                whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+                onClick={() => { playSound.click(); setShowCategoryConfirm(false); }}
+                className="flex-1 py-4 rounded-xl bg-slate-800 text-slate-300 font-bold tracking-widest uppercase hover:bg-slate-700 transition-colors"
+              >
+                No
+              </motion.button>
+            </div>
+          </motion.div>
+        )}
       </AnimatePresence>
-
-      {/* Persistent Banner Ad AT THE BOTTOM */}
       {(gameState === 'MENU' || gameState === 'GAME_OVER') && (
         <div className="fixed bottom-0 left-0 w-full flex justify-center pb-2 bg-slate-900 z-50">
            <AdPlaceholder type="banner" />

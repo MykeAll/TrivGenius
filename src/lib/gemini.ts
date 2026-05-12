@@ -1,6 +1,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let ai: GoogleGenAI | null = null;
+try {
+  ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+} catch (e) {
+  console.warn("Failed to initialize GoogleGenAI. Did you set GEMINI_API_KEY?");
+}
 
 export type TriviaQuestion = {
   question: string;
@@ -10,6 +15,9 @@ export type TriviaQuestion = {
 
 export async function generateTriviaQuestions(count: number = 5, difficulty: string = 'Medium', category: string = 'General Knowledge'): Promise<{ questions: TriviaQuestion[], error?: string }> {
   try {
+    if (!ai) {
+      throw new Error("AI client is not initialized.");
+    }
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `Generate ${count} ${category} trivia questions. Difficulty should be ${difficulty}. Keep it engaging.`,

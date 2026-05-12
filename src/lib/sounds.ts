@@ -35,8 +35,8 @@ let nextNoteTime = 0;
 let current16thNote = 0;
 let currentBgmCategory = 'General Knowledge';
 
-export const playBGM = (category: string = 'General Knowledge') => {
-  currentBgmCategory = category;
+export const playBGM = (themeOrCategory: string = 'default') => {
+  currentBgmCategory = themeOrCategory;
   if (!isMusicEnabled) return;
   
   if (bgmInterval) {
@@ -52,7 +52,7 @@ export const playBGM = (category: string = 'General Knowledge') => {
 
   let scheduler: () => void = () => {};
 
-  if (category === 'History') {
+  if (themeOrCategory === 'vintage' || themeOrCategory === 'History' || themeOrCategory === 'fantasy') {
     // Epic Orchestral (Slower, strings and timpani-like)
     const secondsPerBeat = 60.0 / 80.0;
     const secondsPer16th = secondsPerBeat * 0.25;
@@ -110,11 +110,25 @@ export const playBGM = (category: string = 'General Knowledge') => {
           });
         }
 
+        // Fantasy Chimes (for fantasy theme)
+        if (themeOrCategory === 'fantasy' && tick % 16 === 8) {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(800 + Math.random() * 400, time);
+          gain.gain.setValueAtTime(0.05, time);
+          gain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+          osc.connect(gain);
+          gain.connect(masterGainNode);
+          osc.start(time);
+          osc.stop(time + 0.5);
+        }
+
         nextNoteTime += secondsPer16th;
         current16thNote++;
       }
     };
-  } else if (category === 'Pop Culture') {
+  } else if (themeOrCategory === 'cyberpunk' || themeOrCategory === 'Pop Culture' || themeOrCategory === 'scifi') {
     // Upbeat Electronic Dance
     const secondsPerBeat = 60.0 / 128.0;
     const secondsPer16th = secondsPerBeat * 0.25;
@@ -177,7 +191,7 @@ export const playBGM = (category: string = 'General Knowledge') => {
         current16thNote++;
       }
     };
-  } else if (category === 'Science') {
+  } else if (themeOrCategory === 'space' || themeOrCategory === 'Science') {
     // Ambient / Sci-Fi
     const secondsPerBeat = 60.0 / 90.0;
     const secondsPer16th = secondsPerBeat * 0.25;
@@ -228,6 +242,51 @@ export const playBGM = (category: string = 'General Knowledge') => {
         current16thNote++;
       }
     };
+  } else if (themeOrCategory === 'underwater') {
+    // Underwater Ambient
+    const secondsPerBeat = 60.0 / 70.0;
+    const secondsPer16th = secondsPerBeat * 0.25;
+
+    scheduler = () => {
+      while (nextNoteTime < audioCtx.currentTime + 0.1) {
+        const tick = current16thNote;
+        const time = nextNoteTime;
+        
+        // Deep water hum
+        if (tick % 32 === 0) {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(45, time);
+          gain.gain.setValueAtTime(0.001, time);
+          gain.gain.linearRampToValueAtTime(0.2, time + 1.0);
+          gain.gain.linearRampToValueAtTime(0.001, time + 3.0);
+          osc.connect(gain);
+          gain.connect(masterGainNode);
+          osc.start(time);
+          osc.stop(time + 3.0);
+        }
+
+        // Bubble sounds
+        if (tick % 16 === 0) {
+          const bubbleosc = audioCtx.createOscillator();
+          const bubblegain = audioCtx.createGain();
+          bubbleosc.type = 'sine';
+          bubbleosc.frequency.setValueAtTime(300, time);
+          bubbleosc.frequency.exponentialRampToValueAtTime(800, time + 0.1);
+          bubblegain.gain.setValueAtTime(0.05, time);
+          bubblegain.gain.exponentialRampToValueAtTime(0.001, time + 0.1);
+          bubbleosc.connect(bubblegain);
+          bubblegain.connect(masterGainNode);
+          bubbleosc.start(time);
+          bubbleosc.stop(time + 0.1);
+        }
+
+        nextNoteTime += secondsPer16th;
+        current16thNote++;
+      }
+    };
+
   } else {
     // General Knowledge - Quiz Show Tension (Original)
     const secondsPerBeat = 60.0 / 115.0;
@@ -390,6 +449,13 @@ export const playSound = {
     if (!isEnabled) return;
     playTone(880, 'square', 0.1, 0.03);
     setTimeout(() => playTone(1108.73, 'square', 0.3, 0.03), 50); // A5 then C#6
+    triggerHaptic('heavy');
+  },
+  gameOver: () => {
+    if (!isEnabled) return;
+    playTone(250, 'sawtooth', 0.3, 0.1);
+    setTimeout(() => playTone(200, 'sawtooth', 0.4, 0.1), 300);
+    setTimeout(() => playTone(150, 'sawtooth', 0.8, 0.1), 700);
     triggerHaptic('heavy');
   },
   categorySelect: (category: string) => {
