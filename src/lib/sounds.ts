@@ -12,7 +12,7 @@ export const getSoundEnabled = () => isEnabled;
 export const setMusicEnabled = (enabled: boolean) => {
   isMusicEnabled = enabled;
   if (!enabled) stopBGM();
-  else playBGM(currentBgmCategory);
+  else playBGM(currentBgmTheme, currentBgmCategory);
 };
 
 export const getMusicEnabled = () => isMusicEnabled;
@@ -33,10 +33,12 @@ masterGainNode.connect(audioCtx.destination);
 let bgmInterval: ReturnType<typeof setInterval> | null = null;
 let nextNoteTime = 0;
 let current16thNote = 0;
+let currentBgmTheme = 'default';
 let currentBgmCategory = 'General Knowledge';
 
-export const playBGM = (themeOrCategory: string = 'default') => {
-  currentBgmCategory = themeOrCategory;
+export const playBGM = (theme: string = 'default', category: string = 'General Knowledge') => {
+  currentBgmTheme = theme;
+  currentBgmCategory = category;
   if (!isMusicEnabled) return;
   
   if (bgmInterval) {
@@ -52,7 +54,132 @@ export const playBGM = (themeOrCategory: string = 'default') => {
 
   let scheduler: () => void = () => {};
 
-  if (themeOrCategory === 'vintage' || themeOrCategory === 'History' || themeOrCategory === 'fantasy') {
+  if (category === 'History') {
+    // Classical March (History)
+    const secondsPerBeat = 60.0 / 100.0;
+    const secondsPer16th = secondsPerBeat * 0.25;
+
+    scheduler = () => {
+      while (nextNoteTime < audioCtx.currentTime + 0.1) {
+        const tick = current16thNote;
+        const time = nextNoteTime;
+        
+        // Snare roll
+        if (tick % 2 === 0) {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          const filter = audioCtx.createBiquadFilter();
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(200, time);
+          filter.type = 'highpass';
+          filter.frequency.setValueAtTime(1000, time);
+          gain.gain.setValueAtTime(0.05, time);
+          gain.gain.exponentialRampToValueAtTime(0.001, time + 0.1);
+          osc.connect(filter);
+          filter.connect(gain);
+          gain.connect(masterGainNode);
+          osc.start(time);
+          osc.stop(time + 0.1);
+        }
+
+        // Bass drum
+        if (tick % 8 === 0) {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(100, time);
+          osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.3);
+          gain.gain.setValueAtTime(0.4, time);
+          gain.gain.exponentialRampToValueAtTime(0.01, time + 0.3);
+          osc.connect(gain);
+          gain.connect(masterGainNode);
+          osc.start(time);
+          osc.stop(time + 0.3);
+        }
+
+        nextNoteTime += secondsPer16th;
+        current16thNote++;
+      }
+    };
+  } else if (category === 'Pop Culture') {
+    // Funky / Disco (Pop Culture)
+    const secondsPerBeat = 60.0 / 110.0;
+    const secondsPer16th = secondsPerBeat * 0.25;
+
+    scheduler = () => {
+      while (nextNoteTime < audioCtx.currentTime + 0.1) {
+        const tick = current16thNote;
+        const time = nextNoteTime;
+        
+        // Disco beat
+        if (tick % 4 === 0) {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(120, time);
+          osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.3);
+          gain.gain.setValueAtTime(0.3, time);
+          gain.gain.exponentialRampToValueAtTime(0.01, time + 0.3);
+          osc.connect(gain);
+          gain.connect(masterGainNode);
+          osc.start(time);
+          osc.stop(time + 0.3);
+        }
+
+        // Open hat
+        if (tick % 8 === 4) {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          const filter = audioCtx.createBiquadFilter();
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(8000, time);
+          filter.type = 'highpass';
+          filter.frequency.setValueAtTime(6000, time);
+          gain.gain.setValueAtTime(0.03, time);
+          gain.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
+          osc.connect(filter);
+          filter.connect(gain);
+          gain.connect(masterGainNode);
+          osc.start(time);
+          osc.stop(time + 0.2);
+        }
+
+        nextNoteTime += secondsPer16th;
+        current16thNote++;
+      }
+    };
+  } else if (category === 'Science') {
+    // Synthesized Arpeggios (Science)
+    const secondsPerBeat = 60.0 / 120.0;
+    const secondsPer16th = secondsPerBeat * 0.25;
+
+    scheduler = () => {
+      while (nextNoteTime < audioCtx.currentTime + 0.1) {
+        const tick = current16thNote;
+        const time = nextNoteTime;
+        
+        // Arpeggiator
+        if (tick % 2 === 0) {
+          const arpNotes = [261.63, 329.63, 392.00, 523.25, 392.00, 329.63]; // C, E, G, C(high), G, E
+          const noteIndex = Math.floor(tick / 2) % arpNotes.length;
+          
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(arpNotes[noteIndex], time);
+          gain.gain.setValueAtTime(0.05, time);
+          gain.gain.exponentialRampToValueAtTime(0.001, time + 0.1);
+          osc.connect(gain);
+          gain.connect(masterGainNode);
+          osc.start(time);
+          osc.stop(time + 0.1);
+        }
+
+        nextNoteTime += secondsPer16th;
+        current16thNote++;
+      }
+    };
+  } else if (theme === 'vintage' || theme === 'fantasy') {
     // Epic Orchestral (Slower, strings and timpani-like)
     const secondsPerBeat = 60.0 / 80.0;
     const secondsPer16th = secondsPerBeat * 0.25;
@@ -111,7 +238,7 @@ export const playBGM = (themeOrCategory: string = 'default') => {
         }
 
         // Fantasy Chimes (for fantasy theme)
-        if (themeOrCategory === 'fantasy' && tick % 16 === 8) {
+        if (theme === 'fantasy' && tick % 16 === 8) {
           const osc = audioCtx.createOscillator();
           const gain = audioCtx.createGain();
           osc.type = 'sine';
@@ -128,7 +255,7 @@ export const playBGM = (themeOrCategory: string = 'default') => {
         current16thNote++;
       }
     };
-  } else if (themeOrCategory === 'cyberpunk' || themeOrCategory === 'Pop Culture' || themeOrCategory === 'scifi') {
+  } else if (theme === 'cyberpunk' || theme === 'scifi') {
     // Upbeat Electronic Dance
     const secondsPerBeat = 60.0 / 128.0;
     const secondsPer16th = secondsPerBeat * 0.25;
@@ -191,7 +318,7 @@ export const playBGM = (themeOrCategory: string = 'default') => {
         current16thNote++;
       }
     };
-  } else if (themeOrCategory === 'space' || themeOrCategory === 'Science') {
+  } else if (theme === 'space') {
     // Ambient / Sci-Fi
     const secondsPerBeat = 60.0 / 90.0;
     const secondsPer16th = secondsPerBeat * 0.25;
@@ -242,7 +369,7 @@ export const playBGM = (themeOrCategory: string = 'default') => {
         current16thNote++;
       }
     };
-  } else if (themeOrCategory === 'underwater') {
+  } else if (theme === 'underwater') {
     // Underwater Ambient
     const secondsPerBeat = 60.0 / 70.0;
     const secondsPer16th = secondsPerBeat * 0.25;
@@ -432,18 +559,56 @@ function playTone(freq: number, type: OscillatorType, duration: number, vol: num
 
 export const playSound = {
   click: () => {
-    playTone(600, 'sine', 0.1, 0.05);
+    playTone(600, 'square', 0.05, 0.03);
+    triggerHaptic('light');
+  },
+  select: () => {
+    playTone(800, 'sine', 0.05, 0.05);
     triggerHaptic('light');
   },
   correct: () => {
     playTone(523.25, 'sine', 0.1, 0.1); // C5
-    setTimeout(() => playTone(659.25, 'sine', 0.2, 0.1), 100); // E5
+    setTimeout(() => playTone(659.25, 'sine', 0.15, 0.1), 50); // E5
+    setTimeout(() => playTone(783.99, 'sine', 0.2, 0.1), 100); // G5
     triggerHaptic('success');
   },
   incorrect: () => {
-    playTone(300, 'sawtooth', 0.2, 0.1);
-    setTimeout(() => playTone(250, 'sawtooth', 0.3, 0.1), 150);
+    playTone(150, 'square', 0.15, 0.1);
+    setTimeout(() => playTone(120, 'square', 0.3, 0.15), 100);
     triggerHaptic('error');
+  },
+  powerup: () => {
+    playTone(440, 'sine', 0.1, 0.1);
+    setTimeout(() => playTone(880, 'sine', 0.1, 0.1), 100);
+    setTimeout(() => playTone(1760, 'sine', 0.2, 0.1), 200);
+    triggerHaptic('success');
+  },
+  scoreBooster: () => {
+    if (!isEnabled) return;
+    playTone(440, 'square', 0.1, 0.05);
+    setTimeout(() => playTone(660, 'square', 0.1, 0.05), 100);
+    setTimeout(() => playTone(880, 'square', 0.3, 0.05), 200);
+    triggerHaptic('success');
+  },
+  timeFreeze: () => {
+    if (!isEnabled) return;
+    playTone(880, 'sine', 0.4, 0.05);
+    setTimeout(() => playTone(880, 'sine', 0.4, 0.05), 50);
+    setTimeout(() => playTone(880, 'sine', 0.4, 0.05), 100);
+    triggerHaptic('light');
+  },
+  answerShield: () => {
+    if (!isEnabled) return;
+    playTone(300, 'sawtooth', 0.1, 0.1);
+    setTimeout(() => playTone(350, 'sawtooth', 0.3, 0.1), 50);
+    triggerHaptic('heavy');
+  },
+  fiftyFifty: () => {
+    if (!isEnabled) return;
+    playTone(600, 'square', 0.1, 0.1);
+    setTimeout(() => playTone(400, 'square', 0.1, 0.1), 100);
+    setTimeout(() => playTone(800, 'square', 0.3, 0.15), 200);
+    triggerHaptic('success');
   },
   cashRegister: () => {
     if (!isEnabled) return;
@@ -453,9 +618,10 @@ export const playSound = {
   },
   gameOver: () => {
     if (!isEnabled) return;
-    playTone(250, 'sawtooth', 0.3, 0.1);
-    setTimeout(() => playTone(200, 'sawtooth', 0.4, 0.1), 300);
-    setTimeout(() => playTone(150, 'sawtooth', 0.8, 0.1), 700);
+    playTone(349.23, 'sawtooth', 0.2, 0.1); // F4
+    setTimeout(() => playTone(329.63, 'sawtooth', 0.2, 0.1), 200); // E4
+    setTimeout(() => playTone(293.66, 'sawtooth', 0.2, 0.1), 400); // D4
+    setTimeout(() => playTone(261.63, 'sawtooth', 0.6, 0.1), 600); // C4
     triggerHaptic('heavy');
   },
   categorySelect: (category: string) => {

@@ -20,8 +20,16 @@ export function AnimatedBackground({ theme }: AnimatedBackgroundProps) {
               top: `${Math.random() * 100}%`,
               left: `${Math.random() * 100}%`,
             }}
-            animate={{ opacity: [Math.random() * 0.3, 1, Math.random() * 0.3] }}
-            transition={{ duration: Math.random() * 2 + 1, repeat: Infinity, ease: 'easeInOut' }}
+            animate={{ 
+              opacity: [Math.random() * 0.3, 1, Math.random() * 0.3],
+              x: [0, Math.random() * 50 - 25],
+              y: [0, Math.random() * 50 - 25]
+            }}
+            transition={{ 
+              opacity: { duration: Math.random() * 2 + 1, repeat: Infinity, ease: 'easeInOut' },
+              x: { duration: Math.random() * 20 + 20, repeat: Infinity, ease: 'linear', repeatType: 'reverse' },
+              y: { duration: Math.random() * 20 + 20, repeat: Infinity, ease: 'linear', repeatType: 'reverse' }
+            }}
           />
         ))}
         {/* Shooting star */}
@@ -70,6 +78,21 @@ export function AnimatedBackground({ theme }: AnimatedBackgroundProps) {
           animate={{ opacity: [0.6, 1, 0.6] }}
           transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
         />
+        
+        {/* Swaying Seaweed */}
+        {[...Array(5)].map((_, i) => (
+          <motion.div
+            key={`seaweed-${i}`}
+            className="absolute bottom-0 bg-green-800/40 rounded-t-full origin-bottom mix-blend-overlay"
+            style={{
+              width: Math.random() * 10 + 10,
+              height: Math.random() * 100 + 50,
+              left: `${15 + i * 18}%`,
+            }}
+            animate={{ rotate: [-5, 5, -5] }}
+            transition={{ duration: Math.random() * 2 + 4, repeat: Infinity, ease: 'easeInOut' }}
+          />
+        ))}
       </div>
     );
   }
@@ -103,7 +126,13 @@ export function AnimatedBackground({ theme }: AnimatedBackgroundProps) {
   
   if (theme === 'cyberpunk') {
     return (
-      <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none z-0 bg-[#050505]">
+        {/* Subtle base glow */}
+        <motion.div 
+          className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,255,65,0.05)_0%,transparent_80%)]"
+          animate={{ opacity: [0.5, 1, 0.5] }}
+          transition={{ duration: 5, repeat: Infinity, ease: 'easeInOut' }}
+        />
         {/* Scanning line */}
         <motion.div 
           className="absolute left-0 right-0 h-[2px] bg-[#00ff41]/50 shadow-[0_0_15px_#00ff41]"
@@ -128,7 +157,7 @@ export function AnimatedBackground({ theme }: AnimatedBackgroundProps) {
         <motion.div 
           className="absolute inset-[-100%] bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMDAlIiBoZWlnaHQ9IjIwMCUiPjxmaWx0ZXIgaWQ9Im4iPjxmZVR1cmJ1bGVuY2UgdHlwZT0iZnJhY3RhbE5vaXNlIiBiYXNlRnJlcXVlbmN5PSIwLjciIG51bU9jdGF2ZXM9IjIiIHN0aXRjaFRpbGVzPSJzdGl0Y2giLz48L2ZpbHRlcj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWx0ZXI9InVybCgjbikiIG9wYWNpdHk9IjAuMjUiLz48L3N2Zz4=')]"
           animate={{ x: ['0%', '-5%', '2%', '-3%', '0%'], y: ['0%', '-2%', '5%', '-1%', '0%'] }}
-          transition={{ duration: 0.2, repeat: Infinity, ease: 'steps(3)' }}
+          transition={{ duration: 0.2, repeat: Infinity, ease: 'linear' }}
         />
         {/* Sepia vignetting */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_30%,rgba(0,0,0,0.6)_100%)] mix-blend-multiply" />

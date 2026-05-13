@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
-import { Play, RotateCcw, Brain, Check, X, Trophy, Timer, Lightbulb, Share2, Settings, Star, Calendar } from 'lucide-react';
+import { Play, Loader2, RotateCcw, Brain, Check, X, Trophy, Timer, Lightbulb, Share2, Settings, Star, Calendar } from 'lucide-react';
 import { AnimatedBackground } from './components/AnimatedBackground';
 import { AdPlaceholder } from './components/AdPlaceholder';
 import { generateTriviaQuestions, TriviaQuestion } from './lib/gemini';
@@ -9,6 +9,7 @@ import { AnimatedNumber } from './components/AnimatedNumber';
 import { playSound, getSoundEnabled, setSoundEnabled, playBGM, stopBGM, setMusicEnabled, setMasterVolume, getMasterVolume } from './lib/sounds';
 
 type GameState = 'MENU' | 'LOADING' | 'PLAYING' | 'ADVERT' | 'ADVERT_REWARDED' | 'GAME_OVER' | 'SETTINGS' | 'ACHIEVEMENTS';
+type GameMode = 'CLASSIC' | 'DAILY' | 'SURVIVAL';
 type Difficulty = 'Easy' | 'Medium' | 'Hard';
 type Category = 'General Knowledge' | 'Science' | 'History' | 'Pop Culture';
 type Theme = 'default' | 'space' | 'underwater' | 'fantasy' | 'cyberpunk' | 'vintage' | 'scifi';
@@ -24,6 +25,14 @@ type Stats = {
   gamesCompleted: number;
   totalScore: number;
   categoryPlays: Record<string, number>;
+  categoryScores?: Record<string, number>;
+  typeCorrect?: Record<string, number>;
+  powerups?: {
+    scoreBooster: number;
+    timeFreeze: number;
+    answerShield: number;
+    fiftyFifty: number;
+  };
 };
 
 const defaultStats: Stats = {
@@ -36,12 +45,10 @@ const defaultStats: Stats = {
   dailyHighScore: 0,
   gamesCompleted: 0,
   totalScore: 0,
-  categoryPlays: {
-    'General Knowledge': 0,
-    'Science': 0,
-    'History': 0,
-    'Pop Culture': 0,
-  }
+  categoryPlays: { 'General Knowledge': 0, 'Science': 0, 'History': 0, 'Pop Culture': 0 },
+  categoryScores: { 'General Knowledge': 0, 'Science': 0, 'History': 0, 'Pop Culture': 0 },
+  typeCorrect: { multiple_choice: 0, true_false: 0 },
+  powerups: { scoreBooster: 2, timeFreeze: 2, answerShield: 2, fiftyFifty: 2 },
 };
 
 const QUESTIONS_PER_ROUND = 5;
@@ -75,7 +82,10 @@ export default function App() {
   const [eliminatedOptions, setEliminatedOptions] = useState<number[]>([]);
   const [isNewHighScore, setIsNewHighScore] = useState(false);
   
-  const [isDailyChallenge, setIsDailyChallenge] = useState(false);
+  const [gameMode, setGameMode] = useState<GameMode>('CLASSIC');
+  const [activePowerup, setActivePowerup] = useState<'scoreBooster' | 'timeFreeze' | 'answerShield' | 'fiftyFifty' | null>(null);
+  const [frozenTimer, setFrozenTimer] = useState(false);
+  const [collectedPowerup, setCollectedPowerup] = useState<{type: 'scoreBooster' | 'timeFreeze' | 'answerShield' | 'fiftyFifty', name: string} | null>(null);
   const [dailyTimeStr, setDailyTimeStr] = useState('');
   const [stats, setStats] = useState<Stats>(defaultStats);
   const [soundEnabled, setSoundToggle] = useState(true);
@@ -173,7 +183,7 @@ export default function App() {
     setMusicEnabled(next);
     localStorage.setItem('trivia_genius_music', String(next));
     if (next) {
-      playBGM(theme);
+      playBGM(theme, category);
     } else {
       stopBGM();
     }
@@ -200,7 +210,7 @@ export default function App() {
     playSound.click();
     setShowCategoryConfirm(false);
     setApiError(null);
-    playBGM(theme);
+    playBGM(theme, category);
     localStorage.setItem('trivia_genius_player_name', playerName);
     localStorage.setItem('trivia_genius_theme', theme);
     if (difficulty === 'Hard' && !stats.hardModePlayed) updateStats({ hardModePlayed: true });
@@ -212,8 +222,7 @@ export default function App() {
 
     setScore(0);
     setIsNewHighScore(false);
-    setIsDailyChallenge(false);
-    setGameState('LOADING');
+    setGameMode('CLASSIC');
     await fetchQuestions(newTimerDuration);
   };
 
@@ -225,7 +234,7 @@ export default function App() {
     }
     setNameError(null);
     setApiError(null);
-    playBGM(theme);
+    playBGM(theme, category);
     localStorage.setItem('trivia_genius_player_name', playerName);
     localStorage.setItem('trivia_genius_theme', theme);
     
@@ -240,12 +249,19 @@ export default function App() {
 
     setScore(0);
     setIsNewHighScore(false);
-    setIsDailyChallenge(true);
+    setGameMode('DAILY');
     setDifficulty('Hard'); // Modifiers
-    setGameState('LOADING');
     setIsLoading(true);
     const { questions: newQuestions, error } = await generateTriviaQuestions(10, 'Hard', 'General Knowledge'); // 10 hard questions
-    if (error) setApiError(error);
+    setIsLoading(false);
+    
+    if (error || newQuestions.length === 0) {
+      setApiError(error || "Could not fetch questions. Please check your connection or try again later.");
+      localStorage.removeItem('trivia_genius_daily_last_played'); // Revert so they can try again
+      setGameState('MENU');
+      return;
+    }
+    
     setQuestions(newQuestions);
     setCurrentIdx(0);
     setSelectedOption(null);
@@ -259,11 +275,31 @@ export default function App() {
     setGameState('PLAYING');
   };
 
-  const fetchQuestions = async (forcedDuration?: number) => {
-    setIsLoading(true);
+  const startSurvivalMode = async () => {
+    playSound.click();
+    if (!playerName || playerName.trim().length < 2) {
+      setNameError("Please enter a name (at least 2 characters).");
+      return;
+    }
+    setNameError(null);
     setApiError(null);
-    const { questions: newQuestions, error } = await generateTriviaQuestions(QUESTIONS_PER_ROUND, difficulty, category);
-    if (error) setApiError(error);
+    playBGM(theme, category);
+    localStorage.setItem('trivia_genius_player_name', playerName);
+    localStorage.setItem('trivia_genius_theme', theme);
+    
+    setScore(0);
+    setIsNewHighScore(false);
+    setGameMode('SURVIVAL');
+    setIsLoading(true);
+    const { questions: newQuestions, error } = await generateTriviaQuestions(10, difficulty, category);
+    setIsLoading(false);
+    
+    if (error || newQuestions.length === 0) {
+      setApiError(error || "Could not fetch questions. Please check your connection or try again later.");
+      setGameState('MENU');
+      return;
+    }
+    
     setQuestions(newQuestions);
     setCurrentIdx(0);
     setSelectedOption(null);
@@ -272,21 +308,44 @@ export default function App() {
     setSkipUsed(false);
     setSecondChanceUsed(false);
     setEliminatedOptions([]);
-    setTimeLeft(isDailyChallenge ? DAILY_SECONDS : (forcedDuration ?? timerDuration));
+    setTimeLeft(10); // Faster timer
+    setGameState('PLAYING');
+  };
+
+  const fetchQuestions = async (forcedDuration?: number) => {
+    setIsLoading(true);
+    setApiError(null);
+    const { questions: newQuestions, error } = await generateTriviaQuestions(QUESTIONS_PER_ROUND, difficulty, category);
     setIsLoading(false);
+    
+    if (error || newQuestions.length === 0) {
+      setApiError(error || "Could not fetch questions. Please check your connection or try again later.");
+      setGameState('MENU');
+      return;
+    }
+    
+    setQuestions(newQuestions);
+    setCurrentIdx(0);
+    setSelectedOption(null);
+    setIsAnswerRevealed(false);
+    setHintUsed(false);
+    setSkipUsed(false);
+    setSecondChanceUsed(false);
+    setEliminatedOptions([]);
+    setTimeLeft(gameMode === 'DAILY' ? DAILY_SECONDS : (forcedDuration ?? timerDuration));
     setGameState('PLAYING');
   };
 
   useEffect(() => {
-    if (gameState === 'PLAYING' && !isAnswerRevealed && isProcessingOption === null && timeLeft > 0 && !isPaused && !showSecondChance && (isDailyChallenge || timerDuration > 0)) {
+    if (gameState === 'PLAYING' && !isAnswerRevealed && isProcessingOption === null && timeLeft > 0 && !isPaused && !showSecondChance && !frozenTimer && (gameMode === 'DAILY' || timerDuration > 0)) {
       const timerId = setTimeout(() => {
         setTimeLeft(t => t - 1);
       }, 1000);
       return () => clearTimeout(timerId);
-    } else if (gameState === 'PLAYING' && !isAnswerRevealed && isProcessingOption === null && timeLeft === 0 && !isPaused && !showSecondChance && (isDailyChallenge || timerDuration > 0)) {
+    } else if (gameState === 'PLAYING' && !isAnswerRevealed && isProcessingOption === null && timeLeft === 0 && !isPaused && !showSecondChance && !frozenTimer && (gameMode === 'DAILY' || timerDuration > 0)) {
       handleOptionClick(-1); // -1 signifies timeout
     }
-  }, [gameState, isAnswerRevealed, isProcessingOption, timeLeft, isPaused, showSecondChance]);
+  }, [gameState, isAnswerRevealed, isProcessingOption, timeLeft, isPaused, showSecondChance, frozenTimer, gameMode, timerDuration]);
 
   const fireConfetti = () => {
     confetti({
@@ -300,29 +359,37 @@ export default function App() {
   const handleGameOver = () => {
     playSound.gameOver();
     const newTotalScore = (stats.totalScore || 0) + score;
+    
+    // Reset any active powerup on game over
+    setActivePowerup(null);
+
     const catPlays = (stats.categoryPlays ? { ...stats.categoryPlays } : {
-      'General Knowledge': 0,
-      'Science': 0,
-      'History': 0,
-      'Pop Culture': 0,
+      'General Knowledge': 0, 'Science': 0, 'History': 0, 'Pop Culture': 0,
     }) as any;
+    const catScores = (stats.categoryScores ? { ...stats.categoryScores } : {
+      'General Knowledge': 0, 'Science': 0, 'History': 0, 'Pop Culture': 0,
+    }) as any;
+
     if (category in catPlays) {
       catPlays[category as string] = (catPlays[category as string] || 0) + 1;
+      catScores[category as string] = (catScores[category as string] || 0) + score;
     }
 
-    if (isDailyChallenge) {
+    if (gameMode === 'DAILY') {
       updateStats({
         dailyChallengesCompleted: (stats.dailyChallengesCompleted || 0) + 1,
         dailyHighScore: Math.max(stats.dailyHighScore || 0, score),
         gamesCompleted: (stats.gamesCompleted || 0) + 1,
         totalScore: newTotalScore,
-        categoryPlays: catPlays
+        categoryPlays: catPlays,
+        categoryScores: catScores
       });
     } else {
       updateStats({
         gamesCompleted: (stats.gamesCompleted || 0) + 1,
         totalScore: newTotalScore,
-        categoryPlays: catPlays
+        categoryPlays: catPlays,
+        categoryScores: catScores
       });
     }
     if (score > highScore) {
@@ -332,11 +399,27 @@ export default function App() {
     setGameState('GAME_OVER');
   };
 
-  const advanceQuestion = () => {
+  const advanceQuestion = async () => {
     const isRoundOver = currentIdx + 1 >= questions.length;
     if (isRoundOver) {
-      if (isDailyChallenge) {
+      if (gameMode === 'DAILY') {
         handleGameOver();
+      } else if (gameMode === 'SURVIVAL') {
+        setGameState('LOADING');
+        // Increase difficulty based on score
+        const newDiff = score > 10000 ? 'Hard' : score > 3000 ? 'Medium' : 'Easy';
+        const { questions: newQuestions } = await generateTriviaQuestions(10, newDiff, category);
+        if (newQuestions && newQuestions.length > 0) {
+          setQuestions(newQuestions);
+          setCurrentIdx(0);
+          setSelectedOption(null);
+          setIsAnswerRevealed(false);
+          setEliminatedOptions([]);
+          setTimeLeft(10); // Maintain fast timer
+          setGameState('PLAYING');
+        } else {
+          handleGameOver(); // Fail gracefully
+        }
       } else {
         stopBGM();
         setGameState('ADVERT');
@@ -347,7 +430,7 @@ export default function App() {
       setIsAnswerRevealed(false);
       setEliminatedOptions([]);
       setScorePopup(null);
-      setTimeLeft(isDailyChallenge ? DAILY_SECONDS : timerDuration);
+      setTimeLeft(gameMode === 'DAILY' ? DAILY_SECONDS : gameMode === 'SURVIVAL' ? 10 : timerDuration);
       setShimmerScore(false);
     }
   };
@@ -355,6 +438,8 @@ export default function App() {
   const handleOptionClick = (idx: number) => {
     if (isAnswerRevealed || isPaused || showSecondChance || isProcessingOption !== null) return;
     
+    const isCorrectInfo = idx !== -1 && idx === questions[currentIdx].correctOptionIndex;
+
     if (idx !== -1) {
       playSound.click();
       setIsProcessingOption(idx);
@@ -368,10 +453,12 @@ export default function App() {
       setIsAnswerRevealed(true);
 
       const isCorrect = idx === questions[currentIdx].correctOptionIndex;
+      const questionData = questions[currentIdx];
       
       if (isCorrect) {
         const difficultyMultiplier = difficulty === 'Easy' ? 0.5 : difficulty === 'Hard' ? 2 : 1;
-        const pointsGained = 100 * difficultyMultiplier;
+        const boosterMultiplier = activePowerup === 'scoreBooster' ? 2 : 1;
+        const pointsGained = 100 * difficultyMultiplier * boosterMultiplier;
         const newScore = score + pointsGained;
         
         const milestones = [1000, 5000, 10000, 20000, 50000, 100000];
@@ -400,28 +487,145 @@ export default function App() {
           });
         }
         const newStreak = stats.currentStreak + 1;
-        updateStats({ 
-          totalCorrect: stats.totalCorrect + 1,
-          currentStreak: newStreak,
-          maxStreak: Math.max(stats.maxStreak, newStreak)
-        });
+        
+        if (newStreak === 5 && difficulty !== 'Hard') {
+          const nextDiff = difficulty === 'Easy' ? 'Medium' : 'Hard';
+          setDifficulty(nextDiff);
+          const remainingCount = questions.length - currentIdx - 1;
+          if (remainingCount > 0) {
+            generateTriviaQuestions(remainingCount, nextDiff, category).then(res => {
+              if (res.questions && res.questions.length > 0) {
+                setQuestions(prev => [...prev.slice(0, prev.length - remainingCount), ...res.questions]);
+              }
+            });
+          }
+        }
+        
+        // Update type correct tracking
+        const typeCorrect = stats.typeCorrect ? { ...stats.typeCorrect } : { multiple_choice: 0, true_false: 0 };
+        const qType = questionData.type || 'multiple_choice';
+        typeCorrect[qType] = (typeCorrect[qType] || 0) + 1;
+        
+        if (newStreak > 0 && newStreak % 3 === 0) {
+          const powerupTypes = ['scoreBooster', 'timeFreeze', 'answerShield', 'fiftyFifty'] as const;
+          const powerupNames = { scoreBooster: 'Score Booster', timeFreeze: 'Time Freeze', answerShield: 'Answer Shield', fiftyFifty: '50/50' };
+          const currentPowerups = stats.powerups || { scoreBooster: 2, timeFreeze: 2, answerShield: 2, fiftyFifty: 2 };
+          const availableTypes = powerupTypes.filter(type => (currentPowerups[type] || 0) < 5);
+          const randomType = availableTypes.length > 0 ? availableTypes[Math.floor(Math.random() * availableTypes.length)] : null;
+          
+          if (randomType) {
+            setCollectedPowerup({ type: randomType, name: powerupNames[randomType] });
+            setTimeout(() => setCollectedPowerup(null), 2500);
+            
+            updateStats({
+              totalCorrect: stats.totalCorrect + 1,
+              currentStreak: newStreak,
+              maxStreak: Math.max(stats.maxStreak, newStreak),
+              typeCorrect,
+              powerups: { ...currentPowerups, [randomType]: (currentPowerups[randomType] || 0) + 1 }
+            });
+          } else {
+            updateStats({ 
+              totalCorrect: stats.totalCorrect + 1,
+              currentStreak: newStreak,
+              maxStreak: Math.max(stats.maxStreak, newStreak),
+              typeCorrect
+            });
+          }
+        } else {
+          updateStats({ 
+            totalCorrect: stats.totalCorrect + 1,
+            currentStreak: newStreak,
+            maxStreak: Math.max(stats.maxStreak, newStreak),
+            typeCorrect
+          });
+        }
         
         playSound.cashRegister();
         playSound.correct();
         if (!newHighScoreTriggered) fireConfetti();
+        if (activePowerup === 'scoreBooster') setActivePowerup(null); // use up booster
         
         setTimeout(() => advanceQuestion(), 1500);
       } else {
-        updateStats({ currentStreak: 0 });
         if (idx !== -1) playSound.incorrect();
         
-        if (!secondChanceUsed && !isDailyChallenge && idx !== -1) {
+        if (activePowerup === 'answerShield' && idx !== -1) {
+          // Shield saves them!
+          setActivePowerup(null);
+          setTimeout(() => {
+            setEliminatedOptions(prev => [...prev, idx]);
+            setSelectedOption(null);
+            setIsAnswerRevealed(false);
+          }, 1000);
+          return; // Don't advance or break streak yet!
+        }
+        
+        if (stats.currentStreak >= 5 && difficulty !== 'Easy') {
+          const dropDiff = difficulty === 'Hard' ? 'Medium' : 'Easy';
+          setDifficulty(dropDiff);
+          const remainingCount = questions.length - currentIdx - 1;
+          if (remainingCount > 0) {
+            generateTriviaQuestions(remainingCount, dropDiff, category).then(res => {
+              if (res.questions && res.questions.length > 0) {
+                setQuestions(prev => [...prev.slice(0, prev.length - remainingCount), ...res.questions]);
+              }
+            });
+          }
+        }
+        
+        updateStats({ currentStreak: 0 });
+        
+        if (gameMode === 'SURVIVAL') {
+          setTimeout(() => handleGameOver(), 1500);
+          return;
+        }
+        
+        if (!secondChanceUsed && gameMode !== 'DAILY' && idx !== -1) {
            setTimeout(() => setShowSecondChance(true), 1000);
         } else {
            setTimeout(() => advanceQuestion(), 1500);
         }
       }
-    }, idx === -1 ? 0 : 400);
+    }, idx === -1 ? 0 : (isCorrectInfo ? 600 : 400));
+  };
+
+  const handlePowerup = (type: 'scoreBooster' | 'timeFreeze' | 'answerShield' | 'fiftyFifty') => {
+    if (activePowerup || isAnswerRevealed || gameState !== 'PLAYING' || isPaused || showSecondChance) return;
+    if (stats.powerups && stats.powerups[type] > 0) {
+      if (type === 'scoreBooster') playSound.scoreBooster();
+      else if (type === 'timeFreeze') playSound.timeFreeze();
+      else if (type === 'answerShield') playSound.answerShield();
+      else playSound.fiftyFifty();
+      
+      updateStats({ powerups: { ...stats.powerups, [type]: stats.powerups[type] - 1 } });
+      
+      if (type === 'fiftyFifty') {
+        const currentQ = questions[currentIdx];
+        const incorrectIndices = [0, 1, 2, 3].filter(
+          i => i !== currentQ.correctOptionIndex && !eliminatedOptions.includes(i)
+        );
+        if (incorrectIndices.length >= 2) {
+          const shuffled = [...incorrectIndices].sort(() => 0.5 - Math.random());
+          setEliminatedOptions(prev => [...prev, shuffled[0], shuffled[1]]);
+        } else if (incorrectIndices.length === 1) {
+          setEliminatedOptions(prev => [...prev, incorrectIndices[0]]);
+        }
+        // Set visual state briefly
+        setActivePowerup('fiftyFifty');
+        setTimeout(() => setActivePowerup(null), 1500);
+      } else {
+        setActivePowerup(type);
+        
+        if (type === 'timeFreeze') {
+          setFrozenTimer(true);
+          setTimeout(() => {
+            setFrozenTimer(false);
+            setActivePowerup(null); // timeFreeze wears off after 5s
+          }, 5000);
+        }
+      }
+    }
   };
 
   const useSkip = () => {
@@ -489,13 +693,13 @@ export default function App() {
       setMusicEnabled(false);
       localStorage.setItem('trivia_genius_music', 'false');
     } else if (musicEnabled) {
-      playBGM(theme);
+      playBGM(theme, category);
     }
     setSecondChanceUsed(true);
     setGameState('PLAYING');
     setSelectedOption(null);
     setIsAnswerRevealed(false);
-    setTimeLeft(isDailyChallenge ? DAILY_SECONDS : timerDuration);
+    setTimeLeft(gameMode === 'DAILY' ? DAILY_SECONDS : timerDuration);
   };
 
   const handleAdClose = async () => {
@@ -504,7 +708,7 @@ export default function App() {
       setMusicEnabled(false);
       localStorage.setItem('trivia_genius_music', 'false');
     } else if (musicEnabled) {
-      playBGM(theme);
+      playBGM(theme, category);
     }
     setGameState('LOADING');
     await fetchQuestions();
@@ -531,7 +735,7 @@ export default function App() {
 
   const handleShare = async () => {
     playSound.click();
-    const challengeText = isDailyChallenge ? 'on the Daily Challenge' : `playing on ${difficulty} difficulty`;
+    const challengeText = gameMode === 'DAILY' ? 'on the Daily Challenge' : `playing on ${difficulty} difficulty`;
     const text = `I just scored ${score} points as ${playerName || 'Guest'} in Trivia Genius ${challengeText}! Can you beat my score?`;
     if (navigator.share) {
       try {
@@ -557,7 +761,7 @@ export default function App() {
     playSound.click();
     // Simulate rank since there's no backend connected
     const rank = Math.max(1, Math.floor(10000 - score * 1.5));
-    const challengeText = isDailyChallenge ? 'in the Daily Challenge' : `on the Global Leaderboard`;
+    const challengeText = gameMode === 'DAILY' ? 'in the Daily Challenge' : `on the Global Leaderboard`;
     const text = `I just ranked #${rank} ${challengeText} with ${score} points in Trivia Genius! Think you can do better?`;
     if (navigator.share) {
       try {
@@ -629,10 +833,43 @@ export default function App() {
                     +{scorePopup}
                   </motion.div>
                 )}
+                {activePowerup && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20, scale: 0.8 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -20, scale: 0.8 }}
+                    className={`absolute right-full mr-4 whitespace-nowrap px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest ${
+                      activePowerup === 'scoreBooster' ? 'bg-secondary text-slate-900 shadow-[0_0_15px_rgba(0,195,255,0.5)]' :
+                      activePowerup === 'timeFreeze' ? 'bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.5)]' :
+                      activePowerup === 'answerShield' ? 'bg-purple-500 text-white shadow-[0_0_15px_rgba(168,85,247,0.5)]' :
+                      'bg-green-500 text-white shadow-[0_0_15px_rgba(74,222,128,0.5)]'
+                    }`}
+                  >
+                    {activePowerup === 'scoreBooster' ? '🚀 2x Score Active!' :
+                     activePowerup === 'timeFreeze' ? '❄️ Time Frozen!' :
+                     activePowerup === 'answerShield' ? '🛡️ Shield Active!' :
+                     '⚖️ 50/50 Applied!'}
+                  </motion.div>
+                )}
               </AnimatePresence>
             </div>
           </motion.div>
-          <div className="flex space-x-2">
+          <div className="flex space-x-2 items-center">
+            {/* Game State Indicator */}
+            {(gameState === 'PLAYING' || gameState === 'GAME_OVER' || isLoading) && (
+              <div className="flex items-center space-x-1.5 px-3 py-1 bg-slate-800/50 rounded-full border border-slate-700/50 mr-1">
+                {isLoading ? (
+                  <><Loader2 size={10} className="text-blue-500 animate-spin" /><span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest">Loading</span></>
+                ) : isPaused ? (
+                  <><div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" /><span className="text-[10px] font-bold text-yellow-500 uppercase tracking-widest">Paused</span></>
+                ) : gameState === 'PLAYING' ? (
+                  <><div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /><span className="text-[10px] font-bold text-green-500 uppercase tracking-widest">Playing</span></>
+                ) : gameState === 'GAME_OVER' ? (
+                  <><div className="w-2 h-2 rounded-full bg-red-500" /><span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Finished</span></>
+                ) : null}
+              </div>
+            )}
+            
             {gameState === 'PLAYING' && (
               <>
                 <div className="relative">
@@ -763,42 +1000,60 @@ export default function App() {
               {nameError && (
                 <p className="text-red-400 text-sm font-bold w-full text-center mt-[-8px] relative z-10">{nameError}</p>
               )}
-              <motion.select
-                key={category}
-                initial={{ scale: 1.05, borderColor: '#00C3FF', backgroundColor: '#1E293B' }}
-                animate={{ scale: 1, borderColor: '#334155', backgroundColor: '#1E293B' }}
-                transition={{ duration: 0.3 }}
-                value={category}
-                onChange={e => { 
-                  const newCat = e.target.value as Category;
-                  playSound.categorySelect(newCat); 
-                  setCategory(newCat); 
-                  switch(newCat) {
-                    case 'Science': setTheme('space'); break;
-                    case 'History': setTheme('vintage'); break;
-                    case 'Pop Culture': setTheme('cyberpunk'); break;
-                    case 'General Knowledge': setTheme('default'); break;
-                  }
-                }}
-                className="w-full text-white p-4 rounded-xl font-bold text-center border focus:border-primary outline-none transition-colors appearance-none relative z-10"
-              >
-                <option value="General Knowledge">General Knowledge</option>
-                <option value="Science">Science</option>
-                <option value="History">History</option>
-                <option value="Pop Culture">Pop Culture</option>
-              </motion.select>
+            <div className="flex flex-col w-full mb-6 relative z-10">
+              <div className="relative w-full z-10 flex items-center">
+                <div className="absolute left-4 pointer-events-none text-slate-400 z-20">
+                  {category === 'General Knowledge' && <Brain size={20} />}
+                  {category === 'Science' && <Lightbulb size={20} />}
+                  {category === 'History' && <Calendar size={20} />}
+                  {category === 'Pop Culture' && <Star size={20} />}
+                </div>
+                <motion.select
+                  key={category}
+                  initial={{ scale: 1.05, borderColor: '#00C3FF', backgroundColor: '#1E293B' }}
+                  animate={{ scale: 1, borderColor: '#334155', backgroundColor: '#1E293B' }}
+                  transition={{ duration: 0.3 }}
+                  value={category}
+                  onChange={e => { 
+                    const newCat = e.target.value as Category;
+                    playSound.categorySelect(newCat); 
+                    setCategory(newCat); 
+                    switch(newCat) {
+                      case 'Science': setTheme('space'); break;
+                      case 'History': setTheme('vintage'); break;
+                      case 'Pop Culture': setTheme('cyberpunk'); break;
+                      case 'General Knowledge': setTheme('default'); break;
+                    }
+                  }}
+                  className="w-full text-white p-4 pl-12 rounded-xl font-bold text-left border focus:border-primary outline-none transition-colors appearance-none bg-slate-800/80 relative z-10"
+                >
+                  <option value="General Knowledge">General Knowledge</option>
+                  <option value="Science">Science</option>
+                  <option value="History">History</option>
+                  <option value="Pop Culture">Pop Culture</option>
+                </motion.select>
+                <div className="absolute right-4 pointer-events-none text-slate-400 z-20">
+                  <svg width="12" height="8" viewBox="0 0 12 8" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
             </div>
 
             <div className="flex flex-col w-full mb-4 relative z-10">
               <div className="flex space-x-2 bg-slate-800 p-1 rounded-full w-full relative z-20">
                 {(['Easy', 'Medium', 'Hard'] as Difficulty[]).map(level => (
-                  <button
+                  <motion.button
+                    whileHover={{ backgroundColor: difficulty === level ? undefined : 'rgba(51, 65, 85, 0.5)' }}
+                    animate={difficulty === level ? { scale: 1.05, boxShadow: "0 0 10px rgba(0, 195, 255, 0.5)" } : { scale: 1, boxShadow: "none" }}
+                    transition={{ type: "spring", stiffness: 300, damping: 20 }}
                     key={level}
                     onClick={() => { playSound.click(); setDifficulty(level); }}
-                    className={`flex-1 py-3 px-4 rounded-full font-bold text-sm transition-all ${difficulty === level ? 'bg-secondary text-white shadow-md' : 'text-slate-400 hover:text-white'}`}
+                    className={`flex-1 py-3 px-4 rounded-full font-bold text-sm transition-colors duration-300 ${difficulty === level ? 'bg-secondary text-white' : 'text-slate-400 hover:text-white'}`}
                   >
                     {level}
-                  </button>
+                  </motion.button>
                 ))}
               </div>
               <motion.div 
@@ -855,28 +1110,61 @@ export default function App() {
               </div>
             </div>
 
-            <motion.button 
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={handleStartRequest}
-              className="w-full py-5 mb-4 rounded-2xl bg-gradient-to-r from-primary to-secondary text-white font-display font-bold text-2xl shadow-xl hover:shadow-primary/50 transition-all flex items-center justify-center space-x-2"
-            >
-              <Play fill="currentColor" />
-              <span>PLAY NOW</span>
-            </motion.button>
-            
-            <motion.button 
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={startDailyChallenge}
-              className="w-full py-4 mb-4 rounded-2xl bg-slate-800 border-2 border-accent text-accent font-display font-bold text-lg shadow-lg hover:bg-slate-800/80 transition-all flex justify-between items-center px-6"
-            >
-              <div className="flex items-center space-x-2">
-                <Calendar size={20} />
-                <span>DAILY CHALLENGE</span>
+            <div className="flex flex-col space-y-3 w-full mb-4">
+              <motion.button 
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={handleStartRequest}
+                disabled={isLoading}
+                className="w-full py-5 rounded-2xl bg-gradient-to-r from-primary to-secondary text-white font-display font-bold text-xl sm:text-2xl shadow-xl hover:shadow-primary/50 transition-all flex items-center justify-center space-x-2 disabled:opacity-75"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="animate-spin" />
+                    <span>WAIT...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play fill="currentColor" />
+                    <span>CLASSIC TRIVIA</span>
+                  </>
+                )}
+              </motion.button>
+              
+              <div className="flex space-x-3 w-full">
+                <motion.button 
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={startDailyChallenge}
+                  disabled={isLoading}
+                  className="flex-1 py-3 rounded-2xl bg-slate-800 border-2 border-accent text-accent font-display font-bold text-sm shadow-lg hover:bg-slate-800/80 transition-all flex flex-col items-center justify-center disabled:opacity-75 relative overflow-hidden"
+                >
+                  {isLoading ? (
+                    <Loader2 size={24} className="animate-spin mb-1" />
+                  ) : (
+                    <Calendar size={24} className="mb-1" />
+                  )}
+                  <span>DAILY</span>
+                  <span className="text-[10px] font-mono opacity-80 mt-0.5">{dailyTimeStr}</span>
+                </motion.button>
+
+                <motion.button 
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={startSurvivalMode}
+                  disabled={isLoading}
+                  className="flex-1 py-3 rounded-2xl bg-slate-800 border-2 border-red-500 text-red-500 font-display font-bold text-sm shadow-lg hover:bg-slate-800/80 transition-all flex flex-col items-center justify-center disabled:opacity-75 relative overflow-hidden"
+                >
+                  {isLoading ? (
+                    <Loader2 size={24} className="animate-spin mb-1" />
+                  ) : (
+                    <Timer size={24} className="mb-1" />
+                  )}
+                  <span>SURVIVAL</span>
+                  <span className="text-[10px] font-mono opacity-80 mt-0.5">Sudden Death</span>
+                </motion.button>
               </div>
-              <span className="text-sm font-mono opacity-80">{dailyTimeStr}</span>
-            </motion.button>
+            </div>
             
             <div className="flex space-x-4 w-full">
               <button 
@@ -904,129 +1192,144 @@ export default function App() {
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col items-center justify-center p-6 w-full max-w-md mx-auto z-10"
+            className="flex-1 flex flex-col items-center justify-start p-6 w-full max-w-md mx-auto z-10 overflow-y-auto no-scrollbar pt-12 pb-24"
           >
-            <div className="w-20 h-20 mb-6 rounded-3xl bg-slate-800 flex items-center justify-center shadow-lg">
-              <Settings size={40} className="text-secondary" />
+            <div className="w-16 h-16 mb-4 rounded-3xl bg-slate-800 flex items-center justify-center shadow-lg shrink-0">
+              <Settings size={32} className="text-secondary" />
             </div>
-            <h2 className="text-4xl font-display font-black text-center mb-8">Settings</h2>
+            <h2 className="text-3xl font-display font-black text-center mb-8 shrink-0">Settings</h2>
             
-            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-4 flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-bold">Sound Effects</h3>
-                <p className="text-slate-400 text-sm">Toggle UI and game sound effects</p>
-              </div>
-              <button 
-                onClick={toggleSound}
-                className={`w-16 h-8 rounded-full flex items-center p-1 transition-colors ${soundEnabled ? 'bg-primary' : 'bg-slate-600'}`}
-              >
-                <div className={`w-6 h-6 rounded-full bg-white transition-transform ${soundEnabled ? 'translate-x-8' : 'translate-x-0'}`} />
-              </button>
-            </div>
-
-            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-4 flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-bold">Background Music</h3>
-                <p className="text-slate-400 text-sm">Toggle theme music</p>
-              </div>
-              <button 
-                onClick={toggleMusic}
-                className={`w-16 h-8 rounded-full flex items-center p-1 transition-colors ${musicEnabled ? 'bg-primary' : 'bg-slate-600'}`}
-              >
-                <div className={`w-6 h-6 rounded-full bg-white transition-transform ${musicEnabled ? 'translate-x-8' : 'translate-x-0'}`} />
-              </button>
-            </div>
-
-            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-4">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold">Master Volume</h3>
-                <span className="text-slate-400 font-mono">{Math.round(musicVolume * 100)}%</span>
-              </div>
-              <input 
-                type="range" 
-                min="0" 
-                max="1" 
-                step="0.05"
-                value={musicVolume}
-                onChange={(e) => {
-                  const vol = parseFloat(e.target.value);
-                  setMusicVolume(vol);
-                  setMasterVolume(vol);
-                }}
-                className="w-full accent-primary h-2 bg-slate-700 rounded-full appearance-none outline-none"
-              />
-            </div>
-
-            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-4 flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-bold">Resume Music After Ad</h3>
-                <p className="text-slate-400 text-sm">Auto-resume background music</p>
-              </div>
-              <button 
-                onClick={toggleResumeMusic}
-                className={`w-16 h-8 rounded-full flex items-center p-1 transition-colors ${resumeMusicAfterAd ? 'bg-primary' : 'bg-slate-600'}`}
-              >
-                <div className={`w-6 h-6 rounded-full bg-white transition-transform ${resumeMusicAfterAd ? 'translate-x-8' : 'translate-x-0'}`} />
-              </button>
-            </div>
-
-            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-8 flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-bold">Timer Duration</h3>
-                <p className="text-slate-400 text-sm">Time per question</p>
-              </div>
-              <select
-                value={timerDuration}
-                onChange={e => {
-                  playSound.click();
-                  const val = parseInt(e.target.value, 10);
-                  setTimerDurationState(val);
-                  localStorage.setItem('trivia_genius_timer_duration', val.toString());
-                }}
-                className="bg-slate-700 text-white p-2 rounded-lg font-bold border border-slate-600 focus:border-primary outline-none transition-colors appearance-none text-center"
-              >
-                <option value={10}>10s</option>
-                <option value={15}>15s</option>
-                <option value={20}>20s</option>
-                <option value={0}>No Timer</option>
-              </select>
-            </div>
-
-            <div className="w-full bg-slate-800 rounded-2xl p-6 mb-8 flex flex-col items-center justify-between border-t border-red-500/20">
-              <div className="w-full flex items-center justify-between">
-                <div>
-                  <h3 className="text-xl font-bold text-red-400">Reset Data</h3>
-                  <p className="text-slate-400 text-xs">Clear all stats and achievements</p>
+            {/* Audio Settings Section */}
+            <div className="w-full mb-6 shrink-0">
+              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-3 pl-2">Audio</h3>
+              <div className="w-full bg-slate-800 rounded-2xl p-5 flex flex-col gap-6 border border-slate-700/50">
+                <div className="flex flex-col gap-3">
+                  <div className="flex justify-between items-center">
+                    <span className="font-bold">Master Volume</span>
+                    <span className="text-slate-400 font-mono text-sm">{Math.round(musicVolume * 100)}%</span>
+                  </div>
+                  <input 
+                    type="range" min="0" max="1" step="0.05"
+                    value={musicVolume}
+                    onChange={(e) => {
+                      const vol = parseFloat(e.target.value);
+                      setMusicVolume(vol);
+                      setMasterVolume(vol);
+                    }}
+                    className="w-full accent-primary h-2 bg-slate-700 rounded-full appearance-none outline-none"
+                  />
                 </div>
-                <button 
-                  onClick={() => {
-                    playSound.click();
-                    if (window.confirm('Are you sure you want to completely reset all your statistics and high scores? This cannot be undone.')) {
-                      setStats({
-                        totalCorrect: 0,
-                        maxStreak: 0,
-                        hardModePlayed: false,
-                        hintsUsed: 0,
-                        dailyChallengesCompleted: 0,
-                        dailyHighScore: 0,
-                        gamesCompleted: 0,
-                        totalScore: 0,
-                        categoryPlays: {
-                          'General Knowledge': 0,
-                          'Science': 0,
-                          'History': 0,
-                          'Pop Culture': 0,
-                        }
-                      });
-                      setHighScore(0);
-                      localStorage.removeItem('trivia_genius_high_score');
-                      localStorage.removeItem('trivia_genius_stats');
-                    }
-                  }}
-                  className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors bg-red-900/30 text-red-500 hover:bg-red-900/50 hover:text-red-400 border border-red-500/30`}
-                >
-                  <Trophy size={18} />
-                </button>
+                
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-bold whitespace-nowrap">Sound Effects</div>
+                    <div className="text-slate-400 text-xs mt-0.5">UI & game noises</div>
+                  </div>
+                  <button onClick={toggleSound} className={`w-14 h-7 rounded-full flex items-center p-1 transition-colors ${soundEnabled ? 'bg-primary' : 'bg-slate-600'}`}>
+                    <div className={`w-5 h-5 rounded-full bg-white transition-transform ${soundEnabled ? 'translate-x-7' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-bold whitespace-nowrap">Background Music</div>
+                    <div className="text-slate-400 text-xs mt-0.5">Theme soundtracks</div>
+                  </div>
+                  <button onClick={toggleMusic} className={`w-14 h-7 rounded-full flex items-center p-1 transition-colors ${musicEnabled ? 'bg-primary' : 'bg-slate-600'}`}>
+                    <div className={`w-5 h-5 rounded-full bg-white transition-transform ${musicEnabled ? 'translate-x-7' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-bold whitespace-nowrap">Resume After Ad</div>
+                    <div className="text-slate-400 text-xs mt-0.5">Auto-play music</div>
+                  </div>
+                  <button onClick={toggleResumeMusic} className={`w-14 h-7 rounded-full flex items-center p-1 transition-colors ${resumeMusicAfterAd ? 'bg-primary' : 'bg-slate-600'}`}>
+                    <div className={`w-5 h-5 rounded-full bg-white transition-transform ${resumeMusicAfterAd ? 'translate-x-7' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Game Settings Section */}
+            <div className="w-full mb-6 shrink-0">
+              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-3 pl-2">Game</h3>
+              <div className="w-full bg-slate-800 rounded-2xl p-5 border border-slate-700/50">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-bold whitespace-nowrap">Timer Duration</div>
+                    <div className="text-slate-400 text-xs mt-0.5">Time per question</div>
+                  </div>
+                  <select
+                    value={timerDuration}
+                    onChange={e => {
+                      playSound.click();
+                      const val = parseInt(e.target.value, 10);
+                      setTimerDurationState(val);
+                      localStorage.setItem('trivia_genius_timer_duration', val.toString());
+                    }}
+                    className="bg-slate-700 text-white px-3 py-1.5 rounded-lg font-bold border border-slate-600 focus:border-primary outline-none transition-colors appearance-none text-center text-sm"
+                  >
+                    <option value={10}>10s</option>
+                    <option value={15}>15s</option>
+                    <option value={20}>20s</option>
+                    <option value={0}>No Timer</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Player Stats Section */}
+            <div className="w-full mb-8 shrink-0">
+              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-3 pl-2">Player Stats</h3>
+              <div className="w-full bg-slate-800 rounded-2xl p-5 border border-slate-700/50 space-y-5">
+                <div className="grid grid-cols-2 gap-4 text-center">
+                  <div className="bg-slate-700/50 rounded-xl p-3">
+                    <div className="text-xl font-black text-white">{highScore}</div>
+                    <div className="text-[10px] text-slate-400 uppercase font-bold mt-1">High Score</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded-xl p-3">
+                    <div className="text-xl font-black text-white">{stats.gamesCompleted}</div>
+                    <div className="text-[10px] text-slate-400 uppercase font-bold mt-1">Games Played</div>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-slate-700/50 flex items-center justify-between">
+                  <div>
+                    <div className="font-bold text-red-400 whitespace-nowrap">Reset Data</div>
+                    <div className="text-slate-400 text-xs mt-0.5">Clear all statistics</div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      playSound.click();
+                      if (window.confirm('Are you sure you want to completely reset all your statistics and high scores? This cannot be undone.')) {
+                        setStats({
+                          totalCorrect: 0,
+                          maxStreak: 0,
+                          hardModePlayed: false,
+                          hintsUsed: 0,
+                          dailyChallengesCompleted: 0,
+                          dailyHighScore: 0,
+                          gamesCompleted: 0,
+                          totalScore: 0,
+                          categoryPlays: {
+                            'General Knowledge': 0,
+                            'Science': 0,
+                            'History': 0,
+                            'Pop Culture': 0,
+                          }
+                        });
+                        setHighScore(0);
+                        localStorage.removeItem('trivia_genius_high_score');
+                        localStorage.removeItem('trivia_genius_stats');
+                      }
+                    }}
+                    className="w-10 h-10 rounded-full flex items-center justify-center transition-colors bg-red-900/30 text-red-500 hover:bg-red-900/50 hover:text-red-400 border border-red-500/30"
+                  >
+                    <Trophy size={16} />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1040,7 +1343,7 @@ export default function App() {
                   setGameState('MENU'); 
                 }
               }}
-              className="w-full py-4 rounded-xl bg-slate-800 text-slate-300 font-bold hover:bg-slate-700 transition-colors"
+              className="w-full py-4 rounded-xl bg-slate-800 text-slate-300 font-bold hover:bg-slate-700 transition-colors shrink-0"
             >
               {prevGameState ? 'BACK' : 'BACK TO MENU'}
             </button>
@@ -1068,15 +1371,7 @@ export default function App() {
                 <p className="text-2xl font-display font-black text-accent">{stats.maxStreak}</p>
               </div>
               <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center">
-                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Daily Played</p>
-                <p className="text-2xl font-display font-bold text-white">{stats.dailyChallengesCompleted || 0}</p>
-              </div>
-              <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center">
-                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Daily High</p>
-                <p className="text-2xl font-display font-bold text-white">{stats.dailyHighScore || 0}</p>
-              </div>
-              <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center">
-                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Avg Score</p>
+                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Avg Score (All)</p>
                 <p className="text-2xl font-display font-bold text-white">{stats.gamesCompleted > 0 ? Math.round((stats.totalScore || 0) / stats.gamesCompleted) : 0}</p>
               </div>
               <div className="bg-slate-800 p-3 rounded-2xl text-center border border-slate-700 flex flex-col justify-center overflow-hidden">
@@ -1084,6 +1379,33 @@ export default function App() {
                 <p className="text-sm font-display font-bold text-white truncate px-1">
                   {Object.entries(stats.categoryPlays || {}).sort((a,b)=>(b[1] as number)-(a[1] as number))[0] && (Object.entries(stats.categoryPlays || {}).sort((a,b)=>(b[1] as number)-(a[1] as number))[0][1] as number) > 0 ? Object.entries(stats.categoryPlays || {}).sort((a,b)=>(b[1] as number)-(a[1] as number))[0][0].replace('General Knowledge', 'Gen. Knowledge') : 'None'}
                 </p>
+              </div>
+            </div>
+
+            <div className="w-full bg-slate-800 rounded-2xl p-4 border border-slate-700 mb-6">
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Avg Score by Category</h3>
+              <div className="space-y-2">
+                {Object.entries(stats.categoryPlays || {}).map(([cat, plays]) => (
+                  <div key={cat} className="flex justify-between items-center text-sm">
+                    <span className="text-slate-300">{cat}</span>
+                    <span className="font-bold text-white">{(plays as number) > 0 && stats.categoryScores ? Math.round((stats.categoryScores[cat] || 0) / (plays as number)) : 0}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="w-full bg-slate-800 rounded-2xl p-4 border border-slate-700 mb-6">
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Correct By Type</h3>
+              <div className="flex justify-around items-center text-sm">
+                <div className="text-center">
+                  <div className="text-slate-300 mb-1">Multiple Choice</div>
+                  <div className="font-bold text-white text-lg">{stats.typeCorrect?.multiple_choice || 0}</div>
+                </div>
+                <div className="w-px h-8 bg-slate-700"></div>
+                <div className="text-center">
+                  <div className="text-slate-300 mb-1">True / False</div>
+                  <div className="font-bold text-white text-lg">{stats.typeCorrect?.true_false || 0}</div>
+                </div>
               </div>
             </div>
 
@@ -1215,6 +1537,22 @@ export default function App() {
             exit={{ opacity: 0, x: -50 }}
             className="flex-1 flex flex-col items-center justify-center p-6 w-full max-w-md mx-auto z-10"
           >
+            <AnimatePresence>
+              {collectedPowerup && (
+                <motion.div
+                  initial={{ opacity: 0, y: -20, scale: 0.8 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  className="absolute top-24 z-50 bg-slate-800/90 backdrop-blur border-2 border-accent text-accent px-6 py-3 rounded-full flex items-center space-x-3 shadow-[0_0_15px_rgba(255,204,0,0.4)]"
+                >
+                  <span className="text-xl">
+                    {collectedPowerup.type === 'scoreBooster' ? '🚀' : collectedPowerup.type === 'timeFreeze' ? '❄️' : '🛡️'}
+                  </span>
+                  <span className="font-bold tracking-wider uppercase text-sm">{collectedPowerup.name} Collected!</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          
             <div className="w-full bg-slate-800 rounded-full h-3 mb-8 overflow-hidden relative border border-slate-700/50 shadow-inner">
               <motion.div 
                 className="absolute top-0 left-0 bottom-0 bg-gradient-to-r from-primary to-secondary"
@@ -1236,29 +1574,100 @@ export default function App() {
               </h2>
             </div>
             
-            <div className="w-full flex justify-between mb-4">
+            <div className="w-full grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
               <button
                 onClick={useSkip}
                 disabled={skipUsed || isAnswerRevealed || isPaused || showSecondChance}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-full font-bold text-xs tracking-wider uppercase transition-all ${
+                className={`flex justify-center items-center px-1 py-2 rounded-xl font-bold border transition-all ${
                   skipUsed || isAnswerRevealed || isPaused || showSecondChance
-                    ? 'bg-slate-800/50 text-slate-500 cursor-not-allowed border border-slate-700' 
-                    : 'bg-secondary text-slate-900 hover:bg-cyan-500 shadow-md shadow-secondary/20'
+                    ? 'bg-slate-800/50 text-slate-500 border-slate-700 opacity-50'
+                    : 'bg-slate-800 text-white border-slate-600 hover:bg-slate-700'
                 }`}
               >
-                <span>{skipUsed ? 'Skipped' : 'Skip (1/Round)'}</span>
+                <div className="flex flex-col items-center leading-none">
+                  <span className="text-[10px] text-slate-400 mb-0.5 uppercase tracking-wider">{skipUsed ? 'Used' : 'Skip'}</span>
+                  <span className="text-sm font-semibold">⏭️</span>
+                </div>
               </button>
+              
               <button
-                onClick={useHint}
-                disabled={hintUsed || isAnswerRevealed || isPaused || showSecondChance}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-full font-bold text-xs tracking-wider uppercase transition-all ${
-                  hintUsed || isAnswerRevealed || isPaused || showSecondChance
-                    ? 'bg-slate-800/50 text-slate-500 cursor-not-allowed border border-slate-700' 
-                    : 'bg-accent text-slate-900 hover:bg-yellow-400 shadow-md shadow-accent/20'
+                onClick={() => handlePowerup('scoreBooster')}
+                disabled={activePowerup !== null || (stats.powerups?.scoreBooster || 0) <= 0 || isAnswerRevealed || isPaused || showSecondChance}
+                className={`flex justify-center items-center px-1 py-2 rounded-xl font-bold border transition-all ${
+                  activePowerup === 'scoreBooster' 
+                    ? 'bg-secondary/20 border-secondary text-secondary shadow-[0_0_10px_rgba(0,195,255,0.3)] animate-pulse'
+                    : (stats.powerups?.scoreBooster || 0) <= 0 || isAnswerRevealed || isPaused || showSecondChance
+                      ? 'bg-slate-800/50 text-slate-500 border-slate-700 opacity-50'
+                      : 'bg-slate-800 text-white border-slate-600 hover:bg-slate-700'
                 }`}
               >
-                <Lightbulb size={16} />
-                <span>{hintUsed ? '50/50 Used' : '50/50 (1/Round)'}</span>
+                <div className="flex flex-col items-center leading-none relative">
+                  <span className="text-[10px] text-secondary mb-0.5 uppercase tracking-wider">2x Score</span>
+                  <div className="flex items-center space-x-1">
+                    <span className="text-sm">🚀</span>
+                    <span className="text-xs bg-slate-700 px-1 rounded-full">{stats.powerups?.scoreBooster || 0}</span>
+                  </div>
+                </div>
+              </button>
+
+              <button
+                onClick={() => handlePowerup('timeFreeze')}
+                disabled={activePowerup !== null || (stats.powerups?.timeFreeze || 0) <= 0 || isAnswerRevealed || isPaused || showSecondChance}
+                className={`flex justify-center items-center px-1 py-2 rounded-xl font-bold border transition-all ${
+                  frozenTimer 
+                    ? 'bg-blue-500/20 border-blue-400 text-blue-300 shadow-[0_0_10px_rgba(59,130,246,0.3)] animate-pulse'
+                    : (stats.powerups?.timeFreeze || 0) <= 0 || isAnswerRevealed || isPaused || showSecondChance
+                      ? 'bg-slate-800/50 text-slate-500 border-slate-700 opacity-50'
+                      : 'bg-slate-800 text-white border-slate-600 hover:bg-slate-700'
+                }`}
+              >
+                <div className="flex flex-col items-center leading-none">
+                  <span className="text-[10px] text-blue-400 mb-0.5 uppercase tracking-wider">Freeze</span>
+                  <div className="flex items-center space-x-1">
+                    <span className="text-sm">❄️</span>
+                    <span className="text-xs bg-slate-700 px-1 rounded-full">{stats.powerups?.timeFreeze || 0}</span>
+                  </div>
+                </div>
+              </button>
+
+              <button
+                onClick={() => handlePowerup('answerShield')}
+                disabled={activePowerup !== null || (stats.powerups?.answerShield || 0) <= 0 || isAnswerRevealed || isPaused || showSecondChance}
+                className={`flex justify-center items-center px-1 py-2 rounded-xl font-bold border transition-all ${
+                  activePowerup === 'answerShield'
+                    ? 'bg-purple-500/20 border-purple-400 text-purple-300 shadow-[0_0_10px_rgba(168,85,247,0.3)] animate-pulse'
+                    : (stats.powerups?.answerShield || 0) <= 0 || isAnswerRevealed || isPaused || showSecondChance
+                      ? 'bg-slate-800/50 text-slate-500 border-slate-700 opacity-50'
+                      : 'bg-slate-800 text-white border-slate-600 hover:bg-slate-700'
+                }`}
+              >
+                <div className="flex flex-col items-center leading-none">
+                  <span className="text-[10px] text-purple-400 mb-0.5 uppercase tracking-wider">Shield</span>
+                  <div className="flex items-center space-x-1">
+                    <span className="text-sm">🛡️</span>
+                    <span className="text-xs bg-slate-700 px-1 rounded-full">{stats.powerups?.answerShield || 0}</span>
+                  </div>
+                </div>
+              </button>
+
+              <button
+                onClick={() => handlePowerup('fiftyFifty')}
+                disabled={activePowerup !== null || (stats.powerups?.fiftyFifty || 0) <= 0 || isAnswerRevealed || isPaused || showSecondChance}
+                className={`flex justify-center items-center px-1 py-2 rounded-xl font-bold border transition-all ${
+                  activePowerup === 'fiftyFifty'
+                    ? 'bg-green-500/20 border-green-400 text-green-300 shadow-[0_0_10px_rgba(74,222,128,0.3)] animate-pulse'
+                    : (stats.powerups?.fiftyFifty || 0) <= 0 || isAnswerRevealed || isPaused || showSecondChance
+                      ? 'bg-slate-800/50 text-slate-500 border-slate-700 opacity-50'
+                      : 'bg-slate-800 text-white border-slate-600 hover:bg-slate-700'
+                }`}
+              >
+                <div className="flex flex-col items-center leading-none">
+                  <span className="text-[10px] text-green-400 mb-0.5 uppercase tracking-wider">50/50</span>
+                  <div className="flex items-center space-x-1">
+                    <span className="text-sm">⚖️</span>
+                    <span className="text-xs bg-slate-700 px-1 rounded-full">{stats.powerups?.fiftyFifty || 0}</span>
+                  </div>
+                </div>
               </button>
             </div>
 
@@ -1280,6 +1689,8 @@ export default function App() {
                   }
                 } else if (isEliminated) {
                   btnStyle = "bg-slate-800 border-slate-700 text-slate-500 opacity-20 pointer-events-none";
+                } else if (isProcessingOption === idx) {
+                  btnStyle = "bg-slate-700 border-slate-500 text-white brightness-110 shadow-[inset_0_2px_4px_rgba(0,0,0,0.3)]";
                 }
 
                 return (
@@ -1295,8 +1706,16 @@ export default function App() {
                         handleOptionClick(idx);
                       }
                     }}
-                    animate={isProcessingOption === idx ? { scale: [1, 0.95, 1.05, 1] } : { scale: 1 }}
-                    transition={{ duration: 0.4 }}
+                    animate={
+                      isProcessingOption === idx 
+                        ? (idx === questions[currentIdx].correctOptionIndex 
+                           ? { scale: [1, 1.05, 1], boxShadow: ["0px 0px 0px rgba(74,222,128,0)", "0px 0px 20px rgba(74,222,128,0.8)", "0px 0px 0px rgba(74,222,128,0)"] } 
+                           : { scale: [1, 0.95, 1.05, 1] }) 
+                        : (isAnswerRevealed && isTimeout && idx === questions[currentIdx].correctOptionIndex)
+                          ? { scale: [1, 1.1, 1, 1.1, 1], boxShadow: ["0px 0px 0px rgba(74,222,128,0)", "0px 0px 20px rgba(74,222,128,0.8)", "0px 0px 0px rgba(74,222,128,0)"] }
+                          : { scale: 1 }
+                    }
+                    transition={{ duration: (isProcessingOption === idx && idx === questions[currentIdx].correctOptionIndex) || (isAnswerRevealed && isTimeout && idx === questions[currentIdx].correctOptionIndex) ? 0.6 : 0.4 }}
                     whileHover={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null) ? 1 : 1.02 }}
                     whileTap={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null) ? 1 : 0.98 }}
                     whileDrag={{ scale: 1.05, zIndex: 50, opacity: 0.9 }}
@@ -1451,11 +1870,26 @@ export default function App() {
               <motion.button 
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
+                animate={isNewHighScore ? { 
+                  scale: [1, 1.03, 1],
+                  boxShadow: ["0px 0px 0px rgba(0,195,255,0)", "0px 0px 20px rgba(0,195,255,0.6)", "0px 0px 0px rgba(0,195,255,0)"]
+                } : undefined}
+                transition={isNewHighScore ? { duration: 1.5, repeat: Infinity } : undefined}
                 onClick={handleStartRequest}
-                className="w-full py-4 mt-4 rounded-xl bg-primary text-white font-black tracking-widest text-lg hover:bg-primary/80 transition-colors flex justify-center items-center space-x-2"
+                disabled={isLoading}
+                className={`w-full py-4 mt-4 rounded-xl text-white font-black tracking-widest text-lg transition-colors flex justify-center items-center space-x-2 disabled:opacity-75 ${isNewHighScore ? 'bg-gradient-to-r from-primary to-secondary hover:opacity-90' : 'bg-primary hover:bg-primary/80'}`}
               >
-                <Play size={20} fill="currentColor" />
-                <span>PLAY AGAIN</span>
+                {isLoading ? (
+                  <>
+                    <Loader2 size={20} className="animate-spin" />
+                    <span>GENERATING...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play size={20} fill="currentColor" />
+                    <span>PLAY AGAIN</span>
+                  </>
+                )}
               </motion.button>
             </div>
 
@@ -1482,10 +1916,20 @@ export default function App() {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={handleStartRequest}
-              className="w-full py-5 mb-4 rounded-2xl bg-secondary text-white font-display font-bold text-xl shadow-xl hover:shadow-secondary/50 transition-all flex items-center justify-center space-x-2"
+              disabled={isLoading}
+              className="w-full py-5 mb-4 rounded-2xl bg-secondary text-white font-display font-bold text-xl shadow-xl hover:shadow-secondary/50 transition-all flex items-center justify-center space-x-2 disabled:opacity-75"
             >
-              <RotateCcw />
-              <span>PLAY AGAIN</span>
+              {isLoading ? (
+                <>
+                  <Loader2 className="animate-spin" />
+                  <span>GENERATING...</span>
+                </>
+              ) : (
+                <>
+                  <RotateCcw />
+                  <span>PLAY AGAIN</span>
+                </>
+              )}
             </motion.button>
             <button 
               onClick={() => { playSound.click(); setGameState('MENU'); }}
