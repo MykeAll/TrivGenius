@@ -33,6 +33,7 @@ type Stats = {
     answerShield: number;
     fiftyFifty: number;
   };
+  hasSeenPowerupTutorial?: boolean;
 };
 
 const defaultStats: Stats = {
@@ -49,6 +50,7 @@ const defaultStats: Stats = {
   categoryScores: { 'General Knowledge': 0, 'Science': 0, 'History': 0, 'Pop Culture': 0 },
   typeCorrect: { multiple_choice: 0, true_false: 0 },
   powerups: { scoreBooster: 2, timeFreeze: 2, answerShield: 2, fiftyFifty: 2 },
+  hasSeenPowerupTutorial: false,
 };
 
 const QUESTIONS_PER_ROUND = 5;
@@ -91,6 +93,7 @@ export default function App() {
   const [soundEnabled, setSoundToggle] = useState(true);
 
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
+  const [showPowerupTutorial, setShowPowerupTutorial] = useState(false);
   const [musicEnabled, setMusicToggle] = useState(true);
   const [musicVolume, setMusicVolume] = useState(0.5);
   const [showMusicControls, setShowMusicControls] = useState(false);
@@ -210,7 +213,6 @@ export default function App() {
     playSound.click();
     setShowCategoryConfirm(false);
     setApiError(null);
-    playBGM(theme, category);
     localStorage.setItem('trivia_genius_player_name', playerName);
     localStorage.setItem('trivia_genius_theme', theme);
     if (difficulty === 'Hard' && !stats.hardModePlayed) updateStats({ hardModePlayed: true });
@@ -223,7 +225,14 @@ export default function App() {
     setScore(0);
     setIsNewHighScore(false);
     setGameMode('CLASSIC');
-    await fetchQuestions(newTimerDuration);
+    
+    if (stats.gamesCompleted > 0 && stats.gamesCompleted % 2 === 0) {
+      stopBGM();
+      setGameState('ADVERT');
+    } else {
+      playBGM(theme, category);
+      await fetchQuestions(newTimerDuration);
+    }
   };
 
   const startDailyChallenge = async () => {
@@ -337,15 +346,15 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (gameState === 'PLAYING' && !isAnswerRevealed && isProcessingOption === null && timeLeft > 0 && !isPaused && !showSecondChance && !frozenTimer && (gameMode === 'DAILY' || timerDuration > 0)) {
+    if (gameState === 'PLAYING' && !showPowerupTutorial && !isAnswerRevealed && isProcessingOption === null && timeLeft > 0 && !isPaused && !showSecondChance && !frozenTimer && (gameMode === 'DAILY' || timerDuration > 0)) {
       const timerId = setTimeout(() => {
         setTimeLeft(t => t - 1);
       }, 1000);
       return () => clearTimeout(timerId);
-    } else if (gameState === 'PLAYING' && !isAnswerRevealed && isProcessingOption === null && timeLeft === 0 && !isPaused && !showSecondChance && !frozenTimer && (gameMode === 'DAILY' || timerDuration > 0)) {
+    } else if (gameState === 'PLAYING' && !showPowerupTutorial && !isAnswerRevealed && isProcessingOption === null && timeLeft === 0 && !isPaused && !showSecondChance && !frozenTimer && (gameMode === 'DAILY' || timerDuration > 0)) {
       handleOptionClick(-1); // -1 signifies timeout
     }
-  }, [gameState, isAnswerRevealed, isProcessingOption, timeLeft, isPaused, showSecondChance, frozenTimer, gameMode, timerDuration]);
+  }, [gameState, showPowerupTutorial, isAnswerRevealed, isProcessingOption, timeLeft, isPaused, showSecondChance, frozenTimer, gameMode, timerDuration]);
 
   const fireConfetti = () => {
     confetti({
@@ -421,8 +430,7 @@ export default function App() {
           handleGameOver(); // Fail gracefully
         }
       } else {
-        stopBGM();
-        setGameState('ADVERT');
+        handleGameOver();
       }
     } else {
       setCurrentIdx(i => i + 1);
@@ -441,7 +449,15 @@ export default function App() {
     const isCorrectInfo = idx !== -1 && idx === questions[currentIdx].correctOptionIndex;
 
     if (idx !== -1) {
-      playSound.click();
+      if (isCorrectInfo) {
+        // Immediate positive feedback sound
+        if (getSoundEnabled()) {
+           // We can just use the select tone but make it slightly more pitched up
+           playSound.select(); 
+        }
+      } else {
+        playSound.click();
+      }
       setIsProcessingOption(idx);
     }
     
@@ -488,7 +504,7 @@ export default function App() {
         }
         const newStreak = stats.currentStreak + 1;
         
-        if (newStreak === 5 && difficulty !== 'Hard') {
+        if (newStreak > 0 && newStreak % 3 === 0 && difficulty !== 'Hard') {
           const nextDiff = difficulty === 'Easy' ? 'Medium' : 'Hard';
           setDifficulty(nextDiff);
           const remainingCount = questions.length - currentIdx - 1;
@@ -515,7 +531,13 @@ export default function App() {
           
           if (randomType) {
             setCollectedPowerup({ type: randomType, name: powerupNames[randomType] });
-            setTimeout(() => setCollectedPowerup(null), 2500);
+            setTimeout(() => {
+              setCollectedPowerup(null);
+              if (!stats.hasSeenPowerupTutorial) {
+                setShowPowerupTutorial(true);
+                updateStats({ hasSeenPowerupTutorial: true });
+              }
+            }, 2500);
             
             updateStats({
               totalCorrect: stats.totalCorrect + 1,
@@ -544,7 +566,6 @@ export default function App() {
         playSound.cashRegister();
         playSound.correct();
         if (!newHighScoreTriggered) fireConfetti();
-        if (activePowerup === 'scoreBooster') setActivePowerup(null); // use up booster
         
         setTimeout(() => advanceQuestion(), 1500);
       } else {
@@ -561,8 +582,8 @@ export default function App() {
           return; // Don't advance or break streak yet!
         }
         
-        if (stats.currentStreak >= 5 && difficulty !== 'Easy') {
-          const dropDiff = difficulty === 'Hard' ? 'Medium' : 'Easy';
+        if (stats.currentStreak > 0 && difficulty !== 'Easy') {
+          const dropDiff = 'Easy';
           setDifficulty(dropDiff);
           const remainingCount = questions.length - currentIdx - 1;
           if (remainingCount > 0) {
@@ -621,8 +642,12 @@ export default function App() {
           setFrozenTimer(true);
           setTimeout(() => {
             setFrozenTimer(false);
-            setActivePowerup(null); // timeFreeze wears off after 5s
+            setActivePowerup(curr => curr === 'timeFreeze' ? null : curr); // timeFreeze wears off after 5s
           }, 5000);
+        } else if (type === 'scoreBooster') {
+          setTimeout(() => {
+            setActivePowerup(curr => curr === 'scoreBooster' ? null : curr);
+          }, 15000); // 15s duration
         }
       }
     }
@@ -807,15 +832,22 @@ export default function App() {
               {isNewHighScore ? <span className="text-accent animate-pulse">New High Score!</span> : (playerName ? `${playerName}'s Score` : "Score")}
             </span>
             <div className="flex items-center gap-2 relative">
-              <motion.span 
-                key={score}
-                initial={{ scale: 1 }}
-                animate={{ scale: [1, 1.3, 1] }}
-                transition={{ duration: 0.3, ease: "easeOut" }}
-                className="text-2xl font-display font-bold text-accent inline-block origin-left"
+              <motion.div
+                animate={activePowerup === 'scoreBooster' ? {
+                  textShadow: ["0px 0px 5px rgba(0,195,255,0.5)", "0px 0px 20px rgba(0,195,255,0.9)", "0px 0px 5px rgba(0,195,255,0.5)"]
+                } : {}}
+                transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
               >
-                <AnimatedNumber value={score} />
-              </motion.span>
+                <motion.span 
+                  key={score}
+                  initial={{ scale: 1 }}
+                  animate={{ scale: [1, 1.3, 1] }}
+                  transition={{ duration: 0.3, ease: "easeOut" }}
+                  className={`text-2xl font-display font-bold text-accent inline-block origin-left ${activePowerup === 'scoreBooster' ? 'drop-shadow-[0_0_5px_rgba(0,195,255,0.8)]' : ''}`}
+                >
+                  <AnimatedNumber value={score} />
+                </motion.span>
+              </motion.div>
               {difficulty === 'Hard' && gameState !== 'GAME_OVER' && (
                 <span className="bg-red-500/20 text-red-500 border border-red-500/50 px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-widest">
                   Hard
@@ -824,6 +856,7 @@ export default function App() {
               <AnimatePresence>
                 {scorePopup && (
                   <motion.div
+                    key="score-popup"
                     initial={{ opacity: 0, y: 0, scale: 0.5 }}
                     animate={{ opacity: [0, 1, 0], y: -40, scale: [0.5, 1.2, 1] }}
                     exit={{ opacity: 0 }}
@@ -835,6 +868,7 @@ export default function App() {
                 )}
                 {activePowerup && (
                   <motion.div
+                    key="active-powerup"
                     initial={{ opacity: 0, y: 20, scale: 0.8 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: -20, scale: 0.8 }}
@@ -882,6 +916,7 @@ export default function App() {
                   <AnimatePresence>
                     {showMusicControls && (
                       <motion.div 
+                        key="music-controls"
                         initial={{ opacity: 0, y: -10 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95 }}
@@ -973,8 +1008,18 @@ export default function App() {
             <div className="w-24 h-24 mb-6 rounded-3xl bg-gradient-to-tr from-primary to-secondary flex items-center justify-center shadow-lg shadow-primary/30">
               <Brain size={48} className="text-white" />
             </div>
-            <h1 className="text-5xl font-display font-black text-center mb-2 text-white drop-shadow-md">
-              TRIVIA<br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-accent to-primary">GENIUS</span>
+            <h1 className={`text-5xl font-display font-black text-center mb-2 text-white drop-shadow-md relative perspective-[1000px] ${theme === 'cyberpunk' ? 'text-transparent bg-clip-text bg-gradient-to-b from-[#00ff41] to-[#008f11] filter drop-shadow-[0_0_15px_rgba(0,255,65,0.8)]' : ''}`}>
+              {theme === 'cyberpunk' && (
+                <>
+                  <span className="absolute inset-0 text-transparent pointer-events-none" style={{ WebkitTextStroke: '2px rgba(0,255,65,0.8)', transform: 'translateZ(-5px) translateY(2px)', filter: 'blur(3px)' }}>
+                    TRIVIA<br/>GENIUS
+                  </span>
+                  <span className="absolute inset-0 text-transparent pointer-events-none" style={{ WebkitTextStroke: '1px #ffffff', transform: 'translateZ(5px)', opacity: 0.8 }}>
+                    TRIVIA<br/>GENIUS
+                  </span>
+                </>
+              )}
+              TRIVIA<br/><span className={theme === 'cyberpunk' ? 'text-[#00ff41]' : 'text-transparent bg-clip-text bg-gradient-to-r from-accent to-primary'}>GENIUS</span>
             </h1>
             <p className="text-slate-400 mb-8 font-medium text-center max-w-xs">
               Endless AI generated trivia. How long can you survive?
@@ -1409,6 +1454,28 @@ export default function App() {
               </div>
             </div>
 
+            <div className="w-full bg-slate-800 rounded-2xl p-4 border border-slate-700 mb-6">
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Power-Up Inventory</h3>
+              <div className="grid grid-cols-4 gap-2">
+                <div className="text-center bg-slate-900/50 p-2 rounded-xl">
+                  <div className="text-xl mb-1">🚀</div>
+                  <div className="font-bold text-white text-lg">{stats.powerups?.scoreBooster || 0}</div>
+                </div>
+                <div className="text-center bg-slate-900/50 p-2 rounded-xl">
+                  <div className="text-xl mb-1">❄️</div>
+                  <div className="font-bold text-white text-lg">{stats.powerups?.timeFreeze || 0}</div>
+                </div>
+                <div className="text-center bg-slate-900/50 p-2 rounded-xl">
+                  <div className="text-xl mb-1">🛡️</div>
+                  <div className="font-bold text-white text-lg">{stats.powerups?.answerShield || 0}</div>
+                </div>
+                <div className="text-center bg-slate-900/50 p-2 rounded-xl">
+                  <div className="text-xl mb-1">⚖️</div>
+                  <div className="font-bold text-white text-lg">{stats.powerups?.fiftyFifty || 0}</div>
+                </div>
+              </div>
+            </div>
+
             <div className="w-full space-y-4 mb-8 overflow-y-auto max-h-[40vh] no-scrollbar">
                {[
                  { id: 'centurion', title: 'Centurion', desc: 'Answer 100 questions correctly', 
@@ -1534,12 +1601,13 @@ export default function App() {
             key="playing"
             initial={{ opacity: 0, x: 50 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -50 }}
+            exit={{ opacity: 0, y: -50 }}
             className="flex-1 flex flex-col items-center justify-center p-6 w-full max-w-md mx-auto z-10"
           >
             <AnimatePresence>
               {collectedPowerup && (
                 <motion.div
+                  key="collected-powerup"
                   initial={{ opacity: 0, y: -20, scale: 0.8 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.8 }}
@@ -1563,7 +1631,16 @@ export default function App() {
             </div>
             <div className="w-full text-center mb-6">
               <div className="flex justify-between items-center mb-2">
-                <span className="text-secondary font-bold tracking-widest text-sm uppercase">Question {currentIdx + 1} / {questions.length}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-secondary font-bold tracking-widest text-sm uppercase">Question {currentIdx + 1} / {questions.length}</span>
+                  <span className={`px-2 py-0.5 rounded shadow-sm text-[10px] font-bold uppercase tracking-widest ${
+                    difficulty === 'Easy' ? 'bg-green-500/20 text-green-400 border border-green-500/50' : 
+                    difficulty === 'Medium' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 
+                    'bg-red-500/20 text-red-500 border border-red-500/50'
+                  }`}>
+                    {difficulty}
+                  </span>
+                </div>
                 <div className="flex items-center space-x-2 bg-slate-800 px-3 py-1 rounded-full border border-slate-700">
                   <Timer size={16} className={timeLeft <= 5 ? 'text-primary' : 'text-slate-400'} />
                   <span className={`font-mono font-bold ${timeLeft <= 5 ? 'text-primary animate-pulse' : 'text-slate-300'}`}>00:{timeLeft.toString().padStart(2, '0')}</span>
@@ -1716,8 +1793,8 @@ export default function App() {
                           : { scale: 1 }
                     }
                     transition={{ duration: (isProcessingOption === idx && idx === questions[currentIdx].correctOptionIndex) || (isAnswerRevealed && isTimeout && idx === questions[currentIdx].correctOptionIndex) ? 0.6 : 0.4 }}
-                    whileHover={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null) ? 1 : 1.02 }}
-                    whileTap={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null) ? 1 : 0.98 }}
+                    whileHover={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null) ? 1 : 1.03, x: (isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null) ? 0 : 2 }}
+                    whileTap={{ scale: (isAnswerRevealed || isEliminated || isPaused || showSecondChance || isProcessingOption !== null) ? 1 : 0.95 }}
                     whileDrag={{ scale: 1.05, zIndex: 50, opacity: 0.9 }}
                     className={`w-full p-4 rounded-xl border-b-4 font-bold text-lg text-left transition-colors flex justify-between items-center relative z-10 ${btnStyle}`}
                   >
@@ -1728,6 +1805,20 @@ export default function App() {
                   </motion.button>
                  );
                })}
+             </div>
+             
+             <div className="flex justify-center mt-3 mb-1">
+               <button
+                 onClick={() => {
+                   playSound.click();
+                   fetchQuestions();
+                 }}
+                 disabled={isLoading || isPaused || isAnswerRevealed || showSecondChance}
+                 className="px-4 py-2 bg-slate-800/80 text-slate-300 font-bold border border-slate-700/50 rounded-xl text-[10px] uppercase tracking-wider hover:bg-slate-700 transition-colors flex items-center space-x-2 w-full justify-center"
+               >
+                 <RotateCcw size={12} className={isLoading ? "animate-spin" : ""} />
+                 <span>Fetch New Questions</span>
+               </button>
              </div>
 
             {/* PAUSE MODAL */}
@@ -1780,6 +1871,66 @@ export default function App() {
               </div>
             )}
 
+            {/* POWERUP TUTORIAL OVERLAY */}
+            <AnimatePresence>
+              {showPowerupTutorial && (
+                <motion.div
+                  key="powerup-tutorial"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 bg-slate-900/95 backdrop-blur-xl z-50 flex flex-col items-center justify-center p-6 rounded-3xl border-2 border-accent"
+                >
+                  <motion.div 
+                    initial={{ scale: 0.8, y: 20 }}
+                    animate={{ scale: 1, y: 0 }}
+                    className="w-full max-w-sm flex flex-col items-center text-center space-y-6"
+                  >
+                    <div className="w-20 h-20 rounded-full bg-accent/20 flex flex-col items-center justify-center mb-2 animate-bounce shadow-[0_0_30px_rgba(255,204,0,0.3)]">
+                      <Lightbulb size={40} className="text-accent" />
+                    </div>
+                    <div>
+                      <h2 className="text-3xl font-display font-black text-white mb-3">Power-Ups!</h2>
+                      <p className="text-slate-300 text-sm leading-relaxed mb-6">
+                        You just earned a Power-Up! Keep answering questions correctly in a streak to earn more.
+                      </p>
+                      
+                      <div className="grid grid-cols-2 gap-3 text-left mb-6">
+                        <div className="bg-slate-800 p-3 rounded-xl border border-slate-700">
+                          <div className="text-secondary text-xl mb-1">🚀</div>
+                          <div className="text-xs font-bold text-white mb-1">Score Booster</div>
+                          <div className="text-[10px] text-slate-400">2x points for 15s</div>
+                        </div>
+                        <div className="bg-slate-800 p-3 rounded-xl border border-slate-700">
+                          <div className="text-blue-400 text-xl mb-1">❄️</div>
+                          <div className="text-xs font-bold text-white mb-1">Time Freeze</div>
+                          <div className="text-[10px] text-slate-400">Stops clock for 5s</div>
+                        </div>
+                        <div className="bg-slate-800 p-3 rounded-xl border border-slate-700">
+                          <div className="text-purple-400 text-xl mb-1">🛡️</div>
+                          <div className="text-xs font-bold text-white mb-1">Answer Shield</div>
+                          <div className="text-[10px] text-slate-400">Protects 1 wrong choice</div>
+                        </div>
+                        <div className="bg-slate-800 p-3 rounded-xl border border-slate-700">
+                          <div className="text-green-400 text-xl mb-1">⚖️</div>
+                          <div className="text-xs font-bold text-white mb-1">50 / 50</div>
+                          <div className="text-[10px] text-slate-400">Removes 2 wrong answers</div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <motion.button 
+                      whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                      onClick={() => setShowPowerupTutorial(false)}
+                      className="w-full py-4 rounded-xl bg-accent text-slate-900 font-bold tracking-widest uppercase hover:bg-yellow-400 transition-colors shadow-lg shadow-accent/20"
+                    >
+                      Skip / Got It
+                    </motion.button>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* QUIT CONFIRM MODAL */}
             {showQuitConfirm && (
               <div className="absolute inset-0 bg-slate-900/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 rounded-3xl border-4 border-slate-800">
@@ -1826,19 +1977,45 @@ export default function App() {
         {gameState === 'GAME_OVER' && (
           <motion.div 
             key="game_over"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0 }}
+            initial={{ opacity: 0, scale: 0.9, y: 50 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
             className="flex-1 flex flex-col items-center justify-center p-6 w-full max-w-md mx-auto z-10"
           >
-            <div className="w-24 h-24 mb-6 rounded-full bg-slate-800 flex items-center justify-center shadow-lg">
-              <Trophy size={48} className="text-accent" />
+            <div className="w-24 h-24 mb-6 rounded-full bg-slate-800 flex items-center justify-center shadow-lg relative">
+              {isNewHighScore && (
+                <motion.div 
+                  className="absolute inset-0 rounded-full border-2 border-accent"
+                  animate={{ scale: [1, 1.5, 1], opacity: [1, 0, 1] }}
+                  transition={{ duration: 2, repeat: Infinity, ease: "easeOut" }}
+                />
+              )}
+              <Trophy size={48} className={isNewHighScore ? "text-accent" : "text-slate-400"} />
             </div>
             <h2 className="text-4xl font-display font-black text-center mb-2">Round Over</h2>
             {playerName && <p className="text-lg text-slate-300 font-bold mb-2">Well played, {playerName}!</p>}
-            <div className="text-center mb-8">
+            <div className="text-center mb-8 w-full">
               <p className="text-slate-400 uppercase tracking-widest font-bold text-sm mb-1">Final Score</p>
-              <p className="text-6xl font-display font-black text-white text-shadow-sm">{score}</p>
+              <motion.p 
+                className="text-6xl font-display font-black text-white text-shadow-sm"
+                animate={isNewHighScore ? { scale: [1, 1.1, 1], textShadow: ["0px 0px 0px rgba(255,204,0,0)", "0px 0px 20px rgba(255,204,0,1)", "0px 0px 0px rgba(255,204,0,0)"] } : {}}
+                transition={{ duration: 1.5, repeat: Infinity }}
+              >
+                {score}
+              </motion.p>
+              
+              <div className="w-full mt-4 bg-slate-800 rounded-full h-2 overflow-hidden relative">
+                <motion.div 
+                  className={`absolute top-0 left-0 bottom-0 ${isNewHighScore ? 'bg-accent' : 'bg-primary'}`}
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.min(100, Math.max(2, (score / Math.max(highScore, 100)) * 100))}%` }}
+                  transition={{ duration: 1, delay: 0.5, ease: "easeOut" }}
+                />
+              </div>
+              <div className="flex justify-between w-full text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">
+                <span>0</span>
+                <span className={isNewHighScore ? "text-accent animate-pulse" : ""}>{isNewHighScore ? 'NEW RECORD!' : `High Score: ${highScore}`}</span>
+              </div>
             </div>
 
             <div className="w-full bg-slate-800 p-4 rounded-xl mb-6">
@@ -1975,13 +2152,13 @@ export default function App() {
         </div>
       )}
 
-      <AnimatePresence mode="popLayout">
+      <AnimatePresence>
         <motion.div
           key={themePreview || theme}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 1 }}
+          transition={{ duration: 1.5, ease: 'easeInOut' }}
           className="absolute inset-0 z-0 pointer-events-none"
         >
           <AnimatedBackground theme={themePreview || theme} />
